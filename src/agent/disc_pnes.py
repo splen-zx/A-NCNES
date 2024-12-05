@@ -1,7 +1,6 @@
 import argparse
 import copy
 import logging
-import os
 import math
 import random
 import time
@@ -9,11 +8,12 @@ import time
 import ray
 from ray.util.actor_pool import ActorPool
 import torch
-from tqdm import tqdm
 
 from src.env.utils import get_env
 from src.nn import nn_utils
 from src.plt_utils import *
+
+AGENT_NAME = "PNES"
 
 
 @ray.remote(num_cpus=1)
@@ -42,10 +42,11 @@ class RolloutWorker:
 				action = torch.argmax(action_prob)
 				state, reward, terminated, truncated, info = self.env.step(action)
 				g_reward += reward
-				step +=1
+				step += 1
 				if terminated or truncated:
 					break
 		return g_reward, step
+
 
 @ray.remote
 class NESWorker:
@@ -53,8 +54,8 @@ class NESWorker:
 	             sampling_size=15, phi=0.0001, init_eta=(0.5, 0.1)):
 		
 		self.temp_iteration_res = None
-		self.avgfits = []
-		self.bestfits = []
+		self.avg_fits = []
+		self.best_fits = []
 		self.sampling_size = sampling_size
 		self.init_eta = init_eta
 		self.phi = phi
@@ -86,7 +87,6 @@ class NESWorker:
 		self.folder = folder
 		os.chdir(folder)
 		self.logger = self.init_logger()
-		
 	
 	def init_logger(self):
 		logger = logging.getLogger(f"NESWorker #{self.worker_id}")
@@ -108,11 +108,11 @@ class NESWorker:
 	def draw(self, folder):
 		os.chdir(folder)
 		torch.save(self.best_solution[0], f"./Worker{self.worker_id}_best_solution_{self.best_solution[1]}.pt")
-		x = list(range(1, len(self.bestfits) + 1))
+		x = list(range(1, len(self.best_fits) + 1))
 		
-		saving_pic_multi_line(x, (self.bestfits, self.avgfits), f'Training Fitness with init_eta: {self.init_eta}',
-		                           f'Worker{self.worker_id}_fitness', ['best fitness', 'average fitness'],
-		                           'Fitness')
+		saving_pic_multi_line(x, (self.best_fits, self.avg_fits), f'Training Fitness with init_eta: {self.init_eta}',
+		                      f'Worker{self.worker_id}_fitness', ['best fitness', 'average fitness'],
+		                      'Fitness')
 		# return best solution
 		
 		# show_line_and_area([0,]+x, list(zip(*self.log_infos["means"])), "Means change of some params", f"Worker{self.worker_id}_Means_fig_1")
@@ -130,13 +130,16 @@ class NESWorker:
 		std = sigma ** 0.5
 		self.samples = [torch.randn(self.parameter_scale) * std + mean for _ in range(self.sampling_size)]
 	
-	
-	def check_nan(self, arr, line, name):
+	@staticmethod
+	def check_nan(arr, line, name):
 		for i in arr:
 			if torch.isnan(i).any():
 				print(f"Line {line}: {name} has nan value.")
 				return True
 		return False
+	
+	def get_best_solution(self):
+		return self.best_solution
 	
 	def calculate_delta(self, sorted_pairs):
 		mean, sigma = self.individual
@@ -149,7 +152,7 @@ class NESWorker:
 		sum_s = []
 		sum_fm = []
 		sum_fs = []
-
+		
 		for sample, normalized_fitness in sorted_pairs:
 			diff = (sample - mean)
 			temp = inverse_sigma * diff
@@ -171,13 +174,12 @@ class NESWorker:
 		
 		return d_f_m, d_f_s, f_m, f_s,
 	
-	
 	def update(self, res_f, eta):
 		d_f_m, d_f_s, f_m, f_s = res_f
 		
 		mean, sigma = self.individual
 		new_mean = mean + eta[0] * (f_m ** -1) * d_f_m
-		new_sigma =	torch.clamp(sigma + eta[1] * (f_s ** -1) * d_f_s, 1e-6, 1e2)
+		new_sigma = torch.clamp(sigma + eta[1] * (f_s ** -1) * d_f_s, 1e-6, 1e2)
 		
 		self.individual = (new_mean, new_sigma)
 	
@@ -185,13 +187,13 @@ class NESWorker:
 		self.run_sampling()
 		
 		futs = self.forward_pool.map(lambda actor, v: actor.rollout.remote(*v),
-		                                    [(sample,) for sample in self.samples])
+		                             [(sample,) for sample in self.samples])
 		
 		fits = []
 		steps = 0
 		for fit, step in futs:
 			fits.append(fit)
-			steps +=step
+			steps += step
 		pairs = [list(row) for row in zip(self.samples, fits)]
 		pairs = sorted(pairs, key=lambda x: x[1], reverse=True)
 		
@@ -200,12 +202,11 @@ class NESWorker:
 			self.best_solution = step_best_solution
 		avg_fit = sum([i[1] for i in pairs]) / self.sampling_size
 		# self.logger.info(f'best_fit: {step_best_solution[1]}, avg_fit: {avg_fit}')
-		self.bestfits.append(step_best_solution[1])
-		self.avgfits.append(avg_fit)
+		self.best_fits.append(step_best_solution[1])
+		self.avg_fits.append(avg_fit)
 		self.update(self.calculate_delta(pairs), self.cal_etas(progress))
 		self.step += 1
 		return step_best_solution[1], steps
-	
 
 
 class PNESTrainer:
@@ -241,10 +242,10 @@ class PNESTrainer:
 		                           'init_eta': (self.lr_mean, self.lr_sigma)}
 		
 		# init normalized fitness by ranking
-		self.normalized_fitnesses = [max(math.log(self.sampling_size / 2 + 1) - math.log(i + 1), 0)
-		                             for i in range(self.sampling_size)]
-		temp_sum = sum(self.normalized_fitnesses)
-		self.normalized_fitnesses = [i / temp_sum - 1 / self.sampling_size for i in self.normalized_fitnesses]
+		self.normalized_fitness_list = [max(math.log(self.sampling_size / 2 + 1) - math.log(i + 1), 0)
+		                                for i in range(self.sampling_size)]
+		temp_sum = sum(self.normalized_fitness_list)
+		self.normalized_fitness_list = [i / temp_sum - 1 / self.sampling_size for i in self.normalized_fitness_list]
 		
 		# init distribution population
 		self.parameter_scale = self.get_parameter_scale()
@@ -298,8 +299,7 @@ class PNESTrainer:
 		g_reward = 0
 		# self.env.seed(env_seed)
 		state, info = self.env.reset(seed=env_seed)
-		images = []
-		images.append(self.env.render())
+		images = [self.env.render()]
 		# images.append(state.__array__()[0, :, :])
 		while True:
 			obs = torch.from_numpy(state.__array__()[None] / 255).float()
@@ -324,8 +324,6 @@ class PNESTrainer:
 			if best_episode is None or best_episode[0] > res[0]:
 				best_episode = res
 		return best_episode, scores
-			
-		
 	
 	def train(self):
 		"""开始训练
@@ -338,7 +336,9 @@ class PNESTrainer:
 				                     self.frame_limit) for _ in
 				range(self.sampling_size)]
 			forward_workers.extend(forward_worker)
-			actor = NESWorker.remote(i, seed, self.nn_class, self.model_hyper_param, self.parameter_scale, forward_worker, self.folder,
+			# noinspection PyArgumentList
+			actor = NESWorker.remote(i, seed, self.nn_class, self.model_hyper_param, self.parameter_scale,
+			                         forward_worker, self.folder,
 			                         **self.search_hyper_param)
 			self.search_workers.append(actor)
 		self.forward_pool = ActorPool(forward_workers)
@@ -346,7 +346,7 @@ class PNESTrainer:
 		start_time = time.time()
 		cost_frames = 0
 		print("+++++=====Training start=====+++++")
-		while cost_frames <self.total_frames:
+		while cost_frames < self.total_frames:
 			s = time.time()
 			if self.enable_time_limit:
 				t = s - start_time
@@ -357,11 +357,11 @@ class PNESTrainer:
 				progress = cost_frames / self.total_frames
 			
 			search_tasks = []
-
+			
 			for search_worker in self.search_workers:
 				search_tasks.append(search_worker.search.remote(progress))
 			# print(search_tasks) # diff
-
+			
 			search_res = ray.get(search_tasks)  # 同步
 			best_samples_fits = []
 			for fit, frames in search_res:
@@ -377,12 +377,12 @@ class PNESTrainer:
 	
 	# def log_training_setting(self):
 	# 	with open("./training_setting",'r') as f:
-		
+	
 	def final(self):
 		# if self.forward_pool is None:
 		# 	self.forward_pool = ActorPool([RolloutWorker.remote(self.nn_class, self.model_hyper_param, self.env_name,
 		# 		                     self.frame_limit) for _ in range(self.test_episodes)])
-			
+		
 		# self.log_training_setting()
 		best_solutions = ray.get([search_worker.draw.remote(self.folder) for search_worker in self.search_workers])
 		for i, solution in enumerate(best_solutions):
@@ -390,17 +390,17 @@ class PNESTrainer:
 			best_f = None
 			for j in range(20):
 				score, frames = self.test_individual(solution)
-				if score > best_s:
+				if score >= best_s:
 					best_s = score
 					best_f = frames
-			if best_s > 0:
-				display_frames_as_gif(best_f, f"{i}_score_{score}")
+			if best_f is not None:
+				display_frames_as_gif(best_f, f"{i}_score_{best_s}")
 
 
-def main(agent_name, args):
+def main(args):
 	task_name = f"{args.env_name}"  # input("task_name:")
-	os.makedirs(f"/results/{agent_name}/{task_name}/", exist_ok=True)
-	os.chdir(f"/results/{agent_name}/{task_name}/")
+	os.makedirs(f"/results/{AGENT_NAME}/{task_name}/", exist_ok=True)
+	os.chdir(f"/results/{AGENT_NAME}/{task_name}/")
 	print(os.getcwd())
 	os.makedirs(f"logs/", exist_ok=True)
 	# torch.manual_seed(0)
@@ -414,10 +414,10 @@ def main(agent_name, args):
 	finally:
 		trainer.final()
 
+
 if __name__ == '__main__':
-	agent_name = "PNES"
 	# 参数
-	parser = argparse.ArgumentParser(description=agent_name)
+	parser = argparse.ArgumentParser(description=AGENT_NAME)
 	
 	# Train
 	parser.add_argument('--time_budget', default=300, type=int, help='Time budget in minutes')
@@ -440,7 +440,7 @@ if __name__ == '__main__':
 	parser.add_argument('--test_episodes', default=15, type=int, help='The number of episodes in testing')
 	
 	ray.init()
-	args = parser.parse_args()
+	run_args = parser.parse_args()
 	
-	main(agent_name, args)
+	main(run_args)
 # trainer.test_best()
