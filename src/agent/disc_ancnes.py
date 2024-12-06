@@ -1,8 +1,6 @@
 import argparse
-from argparse import Namespace
 import copy
 import logging
-import os
 import math
 import random
 import time
@@ -12,12 +10,13 @@ import ray
 from ray.util.actor_pool import ActorPool
 import torch
 from torch.utils.data import DataLoader, TensorDataset
-from tqdm import tqdm
 
 from src.agent.disc_pnes import PNESTrainer
 from src.env.utils import get_env
 from src.nn import nn_utils
 from src.plt_utils import *
+
+AGENT_NAME = "A-NCNES"
 
 
 @ray.remote(num_cpus=1)
@@ -61,7 +60,8 @@ class RolloutWorker:
 	def diversity_sampling(self):
 		with torch.no_grad():
 			buffer = ray.get(ray.get(self.diversity_worker.get_buffer_fut.remote()))
-			loader = DataLoader(buffer, 500, False)
+			dataset = TensorDataset(torch.stack(tuple(buffer), dim=0))
+			loader = DataLoader(dataset, 500, False)
 			sum_action_prob = None
 			for batch in loader:
 				action_prob = self.model(batch[0])
@@ -98,27 +98,26 @@ class DiversityWorker:
 				self.env_seed += 1
 				self.env.reset(seed=self.env_seed)
 		
-		self.buffer_fut = ray.put(TensorDataset(torch.stack(tuple(self.buffer), dim=0)))
+		self.buffer_fut = ray.put(self.buffer)
 	
-	def update_buffer(self, frame_futs):
-		for fut in frame_futs:
+	def update_buffer(self, frame_futures):
+		for fut in frame_futures:
 			self.buffer.extend(ray.get(fut))
 		random.shuffle(self.buffer)
-		self.buffer_fut = ray.put(TensorDataset(torch.stack(tuple(self.buffer), dim=0)))
+		self.buffer_fut = ray.put(self.buffer)
 	
 	def get_buffer_fut(self):
 		return self.buffer_fut
 
 
-@ray.remote
-class NESWorker:
+class NESSearch:
 	def __init__(self, worker_id, random_seed, nn_model, model_param, parameter_scale, forward_workers,
 	             diversity_worker, folder,
 	             sampling_size=15, phi=0.0001, init_eta=(0.5, 0.1)):
 		
 		self.temp_iteration_res = None
-		self.avgfits = []
-		self.bestfits = []
+		self.avg_fits = []
+		self.best_fits = []
 		self.sampling_size = sampling_size
 		self.init_eta = init_eta
 		self.phi = phi
@@ -171,9 +170,9 @@ class NESWorker:
 	
 	def draw(self):
 		torch.save(self.best_solution[0], f"./Worker{self.worker_id}_best_solution_{self.best_solution[1]}.pt")
-		x = list(range(1, len(self.bestfits) + 1))
+		x = list(range(1, len(self.best_fits) + 1))
 		
-		saving_pic_multi_line(x, (self.bestfits, self.avgfits), f'Training Fitness with init_eta: {self.init_eta}',
+		saving_pic_multi_line(x, (self.best_fits, self.avg_fits), f'Training Fitness with init_eta: {self.init_eta}',
 		                      f'Worker{self.worker_id}_fitness', ['best fitness', 'average fitness'],
 		                      'Fitness')
 		# return best solution
@@ -208,10 +207,12 @@ class NESWorker:
 	
 	def get_action_probs(self):
 		buffer = ray.get(ray.get(self.diversity_worker.get_buffer_fut.remote()))
-		loader = DataLoader(buffer, 500, False)
+		dataset = TensorDataset(torch.stack(tuple(buffer), dim=0))
+		loader = DataLoader(dataset, 500, False)
 		return [self.diversity_sampling(sample, loader) for sample in self.samples]
 	
-	def check_nan(self, arr, line, name):
+	@staticmethod
+	def check_nan(arr, line, name):
 		for i in arr:
 			if torch.isnan(i).any():
 				print(f"Line {line}: {name} has nan value.")
@@ -285,14 +286,14 @@ class NESWorker:
 	def search1(self):
 		self.run_sampling()
 		
-		futs = self.forward_pool.map(lambda actor, v: actor.rollout.remote(*v),
-		                             [(sample,) for sample in self.samples])
+		futures = self.forward_pool.map(lambda actor, v: actor.rollout.remote(*v),
+		                                [(sample,) for sample in self.samples])
 		
 		fits = []
 		frames_fut = []
 		action_probs = []
 		steps = 0
-		for fit, frame_fut, action_prob, step in futs:
+		for fit, frame_fut, action_prob, step in futures:
 			fits.append(fit)
 			frames_fut.append(frame_fut)
 			action_probs.append(action_prob)
@@ -304,9 +305,9 @@ class NESWorker:
 		if (self.best_solution is None) or step_best_solution[1] > self.best_solution[1]:
 			self.best_solution = step_best_solution
 		avg_fit = sum([i[1] for i in pairs]) / self.sampling_size
-		# self.logger.info(f'best_fit: {step_best_solution[1]}, avg_fit: {avg_fit}')
-		self.bestfits.append(step_best_solution[1])
-		self.avgfits.append(avg_fit)
+		# self.logger.info(f"best_fit: {step_best_solution[1]}, avg_fit: {avg_fit}")
+		self.best_fits.append(step_best_solution[1])
+		self.avg_fits.append(avg_fit)
 		
 		self.temp_iteration_res = self.calculate_delta(pairs)
 		self.sum_action_prob = torch.sum(torch.stack(action_probs), dim=0)
@@ -322,6 +323,11 @@ class NESWorker:
 		# self.logger.debug(f"{self.worker_id}: {self.best_solutions}")
 		self.step += 1
 		return
+
+
+@ray.remote
+class NESWorker(NESSearch):
+	pass
 
 
 class ANCNESTrainer(PNESTrainer):
@@ -348,6 +354,7 @@ class ANCNESTrainer(PNESTrainer):
 	def train(self):
 		"""开始训练
 		"""
+		# noinspection PyArgumentList
 		diversity_worker = DiversityWorker.remote(self.env_name, self.buffer_size)
 		worker_seeds = torch.randint(0, 2147483648, (self.population_size,)).tolist()
 		forward_workers = []
@@ -356,6 +363,7 @@ class ANCNESTrainer(PNESTrainer):
 				RolloutWorker.remote(diversity_worker, **self.diversity_worker_hyper_param) for _ in
 				range(self.sampling_size)]
 			forward_workers.extend(forward_worker)
+			# noinspection PyArgumentList
 			actor = NESWorker.remote(i, seed, self.nn_class, self.model_hyper_param, self.parameter_scale,
 			                         forward_worker, diversity_worker, self.folder,
 			                         **self.search_hyper_param)
@@ -383,21 +391,21 @@ class ANCNESTrainer(PNESTrainer):
 			
 			search_res1 = ray.get(search_tasks1)  # 同步
 			
-			frame_futs = []
+			frame_futures = []
 			action_probs = []
 			best_samples_fits = []
 			for frame_fut, action_prob, fit, frames in search_res1:
-				frame_futs.extend(frame_fut)
+				frame_futures.extend(frame_fut)
 				action_probs.append(action_prob)
 				best_samples_fits.append(fit)
 				cost_frames += frames
 			assert len(best_samples_fits) == self.population_size
 			
-			update_buffer_task = diversity_worker.update_buffer.remote(frame_futs)
+			update_buffer_task = diversity_worker.update_buffer.remote(frame_futures)
 			search_tasks2 = [search_worker.search2.remote(progress, action_probs) for search_worker in
 			                 self.search_workers]
 			# print(search_tasks) # diff
-			best_samples_fut = ray.get(search_tasks2)  # 同步
+			best_samples_future = ray.get(search_tasks2)  # 同步
 			ray.get(update_buffer_task)
 			
 			print(f"\n==={cost_frames}/{self.total_frames}=== {time.time() - s}s")
@@ -405,11 +413,11 @@ class ANCNESTrainer(PNESTrainer):
 		print("+++++=====Training ended=====+++++")
 
 
-def main(agent_name, args):
+def main(args):
 	task_name = f"{args.env_name}"  # input("task_name:")
 	
-	os.makedirs(f"/results/{agent_name}/{task_name}/", exist_ok=True)
-	os.chdir(f"/results/{agent_name}/{task_name}/")
+	os.makedirs(f"/results/{AGENT_NAME}/{task_name}/", exist_ok=True)
+	os.chdir(f"/results/{AGENT_NAME}/{task_name}/")
 	print(os.getcwd())
 	os.makedirs(f"logs/", exist_ok=True)
 	torch.manual_seed(0)
@@ -425,9 +433,8 @@ def main(agent_name, args):
 
 
 if __name__ == '__main__':
-	agent_name = 'A-NCNES'
 	# 参数
-	parser = argparse.ArgumentParser(description=agent_name)
+	parser = argparse.ArgumentParser(description=AGENT_NAME)
 	
 	# Train
 	parser.add_argument('--time_budget', default=300, type=int, help='Time budget in minutes')
@@ -455,8 +462,8 @@ if __name__ == '__main__':
 	# parser.add_argument('--test_size', default=500, type=int, help='Test data size')
 	# parser.add_argument('--batch_size', default=256, type=int, help='Batch size')
 	ray.init()
-	args = parser.parse_args()
+	run_args = parser.parse_args()
 	
-	main(agent_name, args)
+	main(run_args)
 
 # trainer.test_best()

@@ -48,8 +48,7 @@ class RolloutWorker:
 		return g_reward, step
 
 
-@ray.remote
-class NESWorker:
+class NESSearch:
 	def __init__(self, worker_id, random_seed, nn_model, model_param, parameter_scale, forward_workers, folder,
 	             sampling_size=15, phi=0.0001, init_eta=(0.5, 0.1)):
 		
@@ -186,12 +185,12 @@ class NESWorker:
 	def search(self, progress):
 		self.run_sampling()
 		
-		futs = self.forward_pool.map(lambda actor, v: actor.rollout.remote(*v),
-		                             [(sample,) for sample in self.samples])
+		futures = self.forward_pool.map(lambda actor, v: actor.rollout.remote(*v),
+		                                [(sample,) for sample in self.samples])
 		
 		fits = []
 		steps = 0
-		for fit, step in futs:
+		for fit, step in futures:
 			fits.append(fit)
 			steps += step
 		pairs = [list(row) for row in zip(self.samples, fits)]
@@ -201,12 +200,17 @@ class NESWorker:
 		if (self.best_solution is None) or step_best_solution[1] > self.best_solution[1]:
 			self.best_solution = step_best_solution
 		avg_fit = sum([i[1] for i in pairs]) / self.sampling_size
-		# self.logger.info(f'best_fit: {step_best_solution[1]}, avg_fit: {avg_fit}')
+		# self.logger.info(f"best_fit: {step_best_solution[1]}, avg_fit: {avg_fit}")
 		self.best_fits.append(step_best_solution[1])
 		self.avg_fits.append(avg_fit)
 		self.update(self.calculate_delta(pairs), self.cal_etas(progress))
 		self.step += 1
 		return step_best_solution[1], steps
+
+
+@ray.remote
+class NESWorker(NESSearch):
+	pass
 
 
 class PNESTrainer:
@@ -362,13 +366,16 @@ class PNESTrainer:
 				search_tasks.append(search_worker.search.remote(progress))
 			# print(search_tasks) # diff
 			
-			search_res = ray.get(search_tasks)  # 同步
+			search_res = ray.get(search_tasks)
 			best_samples_fits = []
 			for fit, frames in search_res:
 				best_samples_fits.append(fit)
 				cost_frames += frames
-			assert len(best_samples_fits) == self.population_size
 			
+			assert len(best_samples_fits) == self.population_size
+			step_best_training_fit, step_best_index = max((fit, i) for i, fit in enumerate(best_samples_fits))
+			step_best_solution = ray.get(self.search_workers[step_best_index].get_best_solution.remote())
+			# TODO: test step_best_solution
 			# print(search_tasks) # diff
 			
 			print(f"\n==={cost_frames}/{self.total_frames}=== {time.time() - s}s")
