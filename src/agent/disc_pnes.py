@@ -12,6 +12,7 @@ import torch
 from src.env.utils import get_env
 from src.nn import nn_utils
 from src.plt_utils import *
+from utils import RemoteRolloutWorker
 
 AGENT_NAME = "PNES"
 
@@ -24,7 +25,7 @@ class RolloutWorker:
 		self.parameter_scale = self.model.get_parameters_amount()
 		
 		self.env = get_env(env_name, env_param)
-		self.env_seed = 0
+		self.env_seed = random.randint(0, 2147483647)
 		
 		self.frame_limit = frame_limit
 	
@@ -138,7 +139,7 @@ class NESSearch:
 		return False
 	
 	def get_best_solution(self):
-		return self.best_solution
+		return self.best_solution[0]
 	
 	def calculate_delta(self, sorted_pairs):
 		mean, sigma = self.individual
@@ -256,7 +257,8 @@ class PNESTrainer:
 		
 		self.search_workers = []
 		self.best_solutions = []
-		self.forward_pool = None
+		self.best_training_fitness = []
+		self.best_test_res = []
 		
 		self.folder = os.getcwd()
 		print(f"total_frames: {self.total_frames}")
@@ -323,7 +325,7 @@ class PNESTrainer:
 		model = self.get_model_instance()
 		model.set_parameters(model_param)
 		for i in range(self.test_episodes):
-			res = self.test_episodes(model, env_seed)
+			res = self.test_episode(model, env_seed)
 			scores.append(res[0])
 			if best_episode is None or best_episode[0] > res[0]:
 				best_episode = res
@@ -345,7 +347,10 @@ class PNESTrainer:
 			                         forward_worker, self.folder,
 			                         **self.search_hyper_param)
 			self.search_workers.append(actor)
-		self.forward_pool = ActorPool(forward_workers)
+		
+		testing_forward_pool = ActorPool([RemoteRolloutWorker.remote(
+			self.nn_class, self.model_hyper_param, self.env_name, self.frame_limit, envs_num=self.test_episodes), ])
+		new_testing_worker = 1
 		
 		start_time = time.time()
 		cost_frames = 0
@@ -374,23 +379,32 @@ class PNESTrainer:
 			
 			assert len(best_samples_fits) == self.population_size
 			step_best_training_fit, step_best_index = max((fit, i) for i, fit in enumerate(best_samples_fits))
+			self.best_training_fitness.append(step_best_training_fit)
 			step_best_solution = ray.get(self.search_workers[step_best_index].get_best_solution.remote())
-			# TODO: test step_best_solution
-			# print(search_tasks) # diff
+			
+			# test step_best_solution
+			testing_forward_pool.submit(lambda a, v: a.rollout.remote(v), step_best_solution)
+			if new_testing_worker > 0:
+				testing_forward_pool.push(RemoteRolloutWorker.remote(
+					self.nn_class, self.model_hyper_param, self.env_name, self.frame_limit, self.test_episodes))
+				new_testing_worker -= 1
+			else:
+				s_t = time.time()
+				self.best_test_res.append(testing_forward_pool.get_next())
+				if time.time() - s_t > 3.0:
+					new_testing_worker += 1
 			
 			print(f"\n==={cost_frames}/{self.total_frames}=== {time.time() - s}s")
 			print(best_samples_fits)
+		while testing_forward_pool.has_next():
+			self.best_test_res.append(testing_forward_pool.get_next())
 		print("+++++=====Training ended=====+++++")
 	
 	# def log_training_setting(self):
 	# 	with open("./training_setting",'r') as f:
 	
 	def final(self):
-		# if self.forward_pool is None:
-		# 	self.forward_pool = ActorPool([RolloutWorker.remote(self.nn_class, self.model_hyper_param, self.env_name,
-		# 		                     self.frame_limit) for _ in range(self.test_episodes)])
 		
-		# self.log_training_setting()
 		best_solutions = ray.get([search_worker.draw.remote(self.folder) for search_worker in self.search_workers])
 		for i, solution in enumerate(best_solutions):
 			best_s = 0

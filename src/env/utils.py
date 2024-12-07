@@ -39,7 +39,7 @@ def get_env(env_name, env_kargs=None):
 	return config[env_name](**env_kargs)
 
 if __name__ == '__main__':
-	env = breakout()
+	env = freeway()
 	done = False
 	step = 0
 	env.reset()

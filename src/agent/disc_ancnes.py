@@ -405,8 +405,12 @@ class ANCNESTrainer(PNESTrainer):
 			search_tasks2 = [search_worker.search2.remote(progress, action_probs) for search_worker in
 			                 self.search_workers]
 			# print(search_tasks) # diff
-			best_samples_future = ray.get(search_tasks2)  # 同步
 			ray.get(update_buffer_task)
+			ray.get(search_tasks2)  # 同步
+			
+			step_best_training_fit, step_best_index = max((fit, i) for i, fit in enumerate(best_samples_fits))
+			step_best_solution = ray.get(self.search_workers[step_best_index].get_best_solution.remote())
+			# TODO: test step_best_solution
 			
 			print(f"\n==={cost_frames}/{self.total_frames}=== {time.time() - s}s")
 			print(best_samples_fits)
