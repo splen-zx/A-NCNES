@@ -259,6 +259,9 @@ class PNESTrainer:
 		self.best_solutions = []
 		self.best_training_fitness = []
 		self.best_test_res = []
+		self.testing_forward_pool = ActorPool([RemoteRolloutWorker.remote(
+			self.nn_class, self.model_hyper_param, self.env_name, self.frame_limit, envs_num=self.test_episodes), ])
+		self.new_testing_worker = 1
 		
 		self.folder = os.getcwd()
 		print(f"total_frames: {self.total_frames}")
@@ -331,6 +334,27 @@ class PNESTrainer:
 				best_episode = res
 		return best_episode, scores
 	
+	def get_best_solution(self, best_samples_fits):
+		step_best_training_fit, step_best_index = max((fit, i) for i, fit in enumerate(best_samples_fits))
+		self.best_training_fitness.append(step_best_training_fit)
+		return ray.get(self.search_workers[step_best_index].get_best_solution.remote())
+	
+	def training_test(self, solution):
+		self.testing_forward_pool.submit(lambda a, v: a.rollout.remote(v), solution)
+		if self.new_testing_worker > 0:
+			self.testing_forward_pool.push(RemoteRolloutWorker.remote(
+				self.nn_class, self.model_hyper_param, self.env_name, self.frame_limit, self.test_episodes))
+			self.new_testing_worker -= 1
+		else:
+			s_t = time.time()
+			self.best_test_res.append(self.testing_forward_pool.get_next())
+			if time.time() - s_t > 3.0:
+				self.new_testing_worker += 1
+	
+	def get_training_test(self):
+		while self.testing_forward_pool.has_next():
+			self.best_test_res.append(self.testing_forward_pool.get_next())
+	
 	def train(self):
 		"""开始训练
 		"""
@@ -347,10 +371,6 @@ class PNESTrainer:
 			                         forward_worker, self.folder,
 			                         **self.search_hyper_param)
 			self.search_workers.append(actor)
-		
-		testing_forward_pool = ActorPool([RemoteRolloutWorker.remote(
-			self.nn_class, self.model_hyper_param, self.env_name, self.frame_limit, envs_num=self.test_episodes), ])
-		new_testing_worker = 1
 		
 		start_time = time.time()
 		cost_frames = 0
@@ -376,28 +396,15 @@ class PNESTrainer:
 			for fit, frames in search_res:
 				best_samples_fits.append(fit)
 				cost_frames += frames
-			
-			assert len(best_samples_fits) == self.population_size
-			step_best_training_fit, step_best_index = max((fit, i) for i, fit in enumerate(best_samples_fits))
-			self.best_training_fitness.append(step_best_training_fit)
-			step_best_solution = ray.get(self.search_workers[step_best_index].get_best_solution.remote())
+
+			step_best_solution = self.get_best_solution(best_samples_fits)
 			
 			# test step_best_solution
-			testing_forward_pool.submit(lambda a, v: a.rollout.remote(v), step_best_solution)
-			if new_testing_worker > 0:
-				testing_forward_pool.push(RemoteRolloutWorker.remote(
-					self.nn_class, self.model_hyper_param, self.env_name, self.frame_limit, self.test_episodes))
-				new_testing_worker -= 1
-			else:
-				s_t = time.time()
-				self.best_test_res.append(testing_forward_pool.get_next())
-				if time.time() - s_t > 3.0:
-					new_testing_worker += 1
+			self.training_test(step_best_solution)
 			
 			print(f"\n==={cost_frames}/{self.total_frames}=== {time.time() - s}s")
 			print(best_samples_fits)
-		while testing_forward_pool.has_next():
-			self.best_test_res.append(testing_forward_pool.get_next())
+		self.get_training_test()
 		print("+++++=====Training ended=====+++++")
 	
 	# def log_training_setting(self):
