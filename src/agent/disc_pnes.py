@@ -1,7 +1,9 @@
 import argparse
 import copy
+import json
 import logging
 import math
+import os
 import random
 import time
 
@@ -15,6 +17,8 @@ from src.plt_utils import *
 from utils import RemoteRolloutWorker
 
 AGENT_NAME = "PNES"
+RESULT_ROOT_DIR = f"/results/{AGENT_NAME}"
+os.makedirs(RESULT_ROOT_DIR, exist_ok=True)
 
 
 @ray.remote(num_cpus=1)
@@ -107,7 +111,7 @@ class NESSearch:
 	
 	def draw(self, folder):
 		os.chdir(folder)
-		torch.save(self.best_solution[0], f"./Worker{self.worker_id}_best_solution_{self.best_solution[1]}.pt")
+		# torch.save(self.best_solution[0], f"./Worker{self.worker_id}_best_solution_{self.best_solution[1]}.pt")
 		x = list(range(1, len(self.best_fits) + 1))
 		
 		saving_pic_multi_line(x, (self.best_fits, self.avg_fits), f'Training Fitness with init_eta: {self.init_eta}',
@@ -270,6 +274,8 @@ class PNESTrainer:
 		print(f"time_budget: {self.time_budget}s")
 		print(f"lr_mean: {self.lr_mean}")
 		print(f"lr_sigma: {self.lr_sigma}")
+		
+		
 	
 	def save_models(self, model, name):
 		"""保存模型的所有参数
@@ -339,7 +345,7 @@ class PNESTrainer:
 		self.best_training_fitness.append(step_best_training_fit)
 		return ray.get(self.search_workers[step_best_index].get_best_solution.remote())
 	
-	def training_test(self, solution):
+	def training_test(self, solution, step_time):
 		self.testing_forward_pool.submit(lambda a, v: a.rollout.remote(v), solution)
 		if self.new_testing_worker > 0:
 			self.testing_forward_pool.push(RemoteRolloutWorker.remote(
@@ -348,16 +354,16 @@ class PNESTrainer:
 		else:
 			s_t = time.time()
 			self.best_test_res.append(self.testing_forward_pool.get_next())
-			if time.time() - s_t > 3.0:
-				self.new_testing_worker += 1
+			waiting_time = time.time() - s_t
+			if waiting_time > 3.0:
+				self.new_testing_worker += (int(waiting_time / step_time) + 1)
+				print(f'Waiting time: {waiting_time}, adding {(int(waiting_time / step_time) + 1)} worker')
 	
 	def get_training_test(self):
 		while self.testing_forward_pool.has_next():
 			self.best_test_res.append(self.testing_forward_pool.get_next())
-	
-	def train(self):
-		"""开始训练
-		"""
+			
+	def init_training(self):
 		worker_seeds = torch.randint(0, 2147483648, (self.population_size,)).tolist()
 		forward_workers = []
 		for i, seed in enumerate(worker_seeds):
@@ -371,6 +377,27 @@ class PNESTrainer:
 			                         forward_worker, self.folder,
 			                         **self.search_hyper_param)
 			self.search_workers.append(actor)
+	
+	def train_step(self, progress):
+		search_tasks = []
+		step_frames = 0
+		for search_worker in self.search_workers:
+			search_tasks.append(search_worker.search.remote(progress))
+		# print(search_tasks) # diff
+		
+		search_res = ray.get(search_tasks)
+		best_samples_fits = []
+		for fit, frames in search_res:
+			best_samples_fits.append(fit)
+			step_frames += frames
+		
+		step_best_solution = self.get_best_solution(best_samples_fits)
+		return step_best_solution, best_samples_fits, step_frames
+	
+	def train(self):
+		"""开始训练
+		"""
+		self.init_training()
 		
 		start_time = time.time()
 		cost_frames = 0
@@ -385,25 +412,16 @@ class PNESTrainer:
 			else:
 				progress = cost_frames / self.total_frames
 			
-			search_tasks = []
+			step_best_solution, best_samples_fits, step_frames = self.train_step(progress)
+			cost_frames += step_frames
 			
-			for search_worker in self.search_workers:
-				search_tasks.append(search_worker.search.remote(progress))
-			# print(search_tasks) # diff
-			
-			search_res = ray.get(search_tasks)
-			best_samples_fits = []
-			for fit, frames in search_res:
-				best_samples_fits.append(fit)
-				cost_frames += frames
-
-			step_best_solution = self.get_best_solution(best_samples_fits)
+			step_time = time.time() - s
+			print(f"\n==={cost_frames}/{self.total_frames}=== {step_time}s")
+			print(best_samples_fits)
 			
 			# test step_best_solution
-			self.training_test(step_best_solution)
-			
-			print(f"\n==={cost_frames}/{self.total_frames}=== {time.time() - s}s")
-			print(best_samples_fits)
+			self.training_test(step_best_solution, step_time)
+		
 		self.get_training_test()
 		print("+++++=====Training ended=====+++++")
 	
@@ -412,27 +430,67 @@ class PNESTrainer:
 	
 	def final(self):
 		
-		best_solutions = ray.get([search_worker.draw.remote(self.folder) for search_worker in self.search_workers])
-		for i, solution in enumerate(best_solutions):
-			best_s = 0
-			best_f = None
-			for j in range(20):
-				score, frames = self.test_individual(solution)
-				if score >= best_s:
-					best_s = score
-					best_f = frames
-			if best_f is not None:
-				display_frames_as_gif(best_f, f"{i}_score_{best_s}")
+		ray.get([search_worker.draw.remote(self.folder) for search_worker in self.search_workers])
+		
+		# best_s = 0
+		# best_f = None
+		# for i, solution in enumerate(best_solutions):
+		# 	for j in range(20):
+		# 		score, frames = self.test_individual(solution)
+		# 		if score >= best_s:
+		# 			best_s = score
+		# 			best_f = frames
+		# if best_f is not None:
+		# 		display_frames_as_gif(best_f, f"best_final_test_score_{best_s}")
+		x = list(range(1, len(self.best_training_fitness) + 1))
+		average_test_score, average_test_steps = tuple(zip(*self.best_test_res))
+		saving_pic_multi_line(x, (self.best_training_fitness, average_test_score), f'Training Fitness',
+		                      f'fitness', ['Training Fitness', 'Average Testing Result'],
+		                      'Score')
+		training_res = {"training_fitness": self.best_training_fitness,
+		                "average_test_score": average_test_score,
+		                "average_test_steps": average_test_steps}
+		with open('config_result.json', 'w') as f:
+			json.dump(self.args.__dict__ | training_res, f)
+		return training_res
 
 
-def main(args):
-	task_name = f"{args.env_name}"  # input("task_name:")
-	os.makedirs(f"/results/{AGENT_NAME}/{task_name}/", exist_ok=True)
-	os.chdir(f"/results/{AGENT_NAME}/{task_name}/")
+def get_parser():
+	arg_parser = argparse.ArgumentParser(description=AGENT_NAME)
+	
+	# Train
+	arg_parser.add_argument('--time_budget', default=300, type=int, help='Time budget in minutes')
+	arg_parser.add_argument('--total_frames', default=750000, type=int, help='Number of total frames limit')
+	arg_parser.add_argument('--enable_time_limit', default=False, type=bool, help='Enable time limit')
+	arg_parser.add_argument('--population_size', default=5, type=int, help='Population size')
+	arg_parser.add_argument('--sampling_size', default=15, type=int, help='Sampling size for each individual')
+	arg_parser.add_argument('--frame_limit', default=10000, type=int, help='Frame limit for each rollout')
+	
+	arg_parser.add_argument('--lr_mean', default=0.2, type=float, help='Initial value of mean')
+	arg_parser.add_argument('--lr_sigma', default=0.1, type=float, help='Initial value of sigma')
+	
+	# Module
+	arg_parser.add_argument('--nn_class', default="DQN_Atari", type=str, help='The network model')
+	arg_parser.add_argument('--input_channels', default=4, type=int, help='The number of frames to input')
+	
+	# Environment
+	arg_parser.add_argument('--env_name', default="Freeway", type=str, help='The network model')
+	
+	# Test
+	arg_parser.add_argument('--test_episodes', default=15, type=int, help='The number of episodes in testing')
+	
+	return arg_parser
+
+
+def train_once(args, task_name=None):
+	if task_name is None:
+		task_name = f"{args.env_name}"  # input("task_name:")
+	os.makedirs(f"./{task_name}/", exist_ok=False)
+	os.chdir(f"./{task_name}/")
 	print(os.getcwd())
 	os.makedirs(f"logs/", exist_ok=True)
-	# torch.manual_seed(0)
 	
+	# torch.manual_seed(0)
 	trainer = PNESTrainer(args)
 	
 	try:
@@ -440,35 +498,44 @@ def main(args):
 	except Exception as e:
 		print(e)
 	finally:
-		trainer.final()
+		res = trainer.final()
+	
+	os.chdir('../')
+	return res
+
+
+def train_groups(group_args, num_tasks=10, task_group_name=None):
+	if task_group_name is None:
+		task_group_name = f"{num_tasks}-{group_args.env_name}"
+	os.makedirs(f"./{task_group_name}/", exist_ok=False)
+	os.chdir(f"./{task_group_name}/")
+	ress = []
+	for i in range(num_tasks):
+		ress.append(train_once(group_args, f'{i}'))
+	training_fitness = []
+	average_test_score = []
+	iterations = None
+	for res in ress:
+		training_fitness.append(res['training_fitness'])
+		average_test_score.append(res['average_test_score'])
+		if iterations is None:
+			iterations = len(res['training_fitness'])
+		else:
+			iterations = max(iterations, len(res['training_fitness']))
+	training_fitness = [arr[:iterations] for arr in training_fitness]
+	average_test_score = [arr[:iterations] for arr in average_test_score]
+	show_multi_line_and_area(list(range(1, iterations + 1)), (training_fitness, average_test_score),
+	                         f"{AGENT_NAME}: {group_args.env_name} training result with {num_tasks} runs",
+	                         "sum_result", ['Training Fitness', 'Average Test Score'],
+	                         "Score")
+	os.chdir(f"../")
 
 
 if __name__ == '__main__':
-	# 参数
-	parser = argparse.ArgumentParser(description=AGENT_NAME)
-	
-	# Train
-	parser.add_argument('--time_budget', default=300, type=int, help='Time budget in minutes')
-	parser.add_argument('--total_frames', default=25000000, type=int, help='Number of total frames limit')
-	parser.add_argument('--enable_time_limit', default=False, type=bool, help='Enable time limit')
-	parser.add_argument('--population_size', default=5, type=int, help='Population size')
-	parser.add_argument('--sampling_size', default=15, type=int, help='Sampling size for each individual')
-	parser.add_argument('--frame_limit', default=10000, type=int, help='Frame limit for each rollout')
-	
-	parser.add_argument('--lr_mean', default=0.2, type=float, help='Initial value of mean')
-	parser.add_argument('--lr_sigma', default=0.1, type=float, help='Initial value of sigma')
-	# Network
-	parser.add_argument('--nn_class', default="DQN_Atari", type=str, help='The network model')
-	parser.add_argument('--input_channels', default=4, type=int, help='The number of frames to input')
-	
-	# Environment
-	parser.add_argument('--env_name', default="Freeway", type=str, help='The network model')
-	
-	# Test
-	parser.add_argument('--test_episodes', default=15, type=int, help='The number of episodes in testing')
-	
-	ray.init()
+	os.chdir(RESULT_ROOT_DIR)
+	parser = get_parser()
 	run_args = parser.parse_args()
 	
-	main(run_args)
+	# train_once(run_args)
+	train_groups(run_args, 5)
 # trainer.test_best()

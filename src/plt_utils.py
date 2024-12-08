@@ -1,7 +1,9 @@
 import matplotlib.pyplot as plt
-from matplotlib import animation
-
+from matplotlib import animation, pyplot
+import numpy as np
 import os
+
+palette = pyplot.get_cmap("Set1")
 
 
 def display_frames_as_gif(frames, name):
@@ -20,7 +22,29 @@ def saving_pic_multi_line(x, y, fig_name, image_file_name, line_labels, y_label,
 	plt.figure(figsize=(8, 6))
 	for data, name in zip(y, line_labels):
 		plt.plot(x, data, marker=None, linestyle='-', label=name)
-	if legend: plt.legend()
+	if legend:
+		plt.legend()
+	plt.title(fig_name)
+	plt.xlabel(x_label)
+	plt.ylabel(y_label)
+	plt.savefig(os.path.join(f'./{image_file_name}.png'))
+
+
+def show_multi_line_and_area(x, y, fig_name, image_file_name, line_labels, y_label, x_label="Iteration Step", legend=True):
+	plt.figure(figsize=(8, 6))
+	for i, data, name in zip(range(len(line_labels)), y, line_labels):
+		data = np.array(data)
+		avg = np.mean(data, axis=0)
+		std = np.std(data, axis=0)
+		up = avg + std
+		down = avg - std
+		down = np.maximum(down, 0)
+		color = palette(i)
+		plt.plot(x, avg, marker=None, linestyle='-', label=name, color=color)
+		plt.fill_between(x, down, up, color=color, alpha=0.2, )
+		
+	if legend:
+		plt.legend()
 	plt.title(fig_name)
 	plt.xlabel(x_label)
 	plt.ylabel(y_label)
@@ -34,9 +58,9 @@ def show_line_and_area(x, y, fig_name, image_file_name, y_label="Value", x_label
 	plt.plot(y[2], label='Mean', color='red')
 	
 	# 使用 fill_between 填充最小值和最大值之间的区域
-	plt.fill_between(x, y[0], y[1], color='gray', alpha=0.2,
-	                 label=f'Range')
-	
+	# plt.fill_between(x, y[0], y[1], color='gray', alpha=0.2,
+	#                  label=f'Range')
+	#
 	plt.xlabel(x_label)
 	plt.ylabel(y_label)
 	plt.title(fig_name)

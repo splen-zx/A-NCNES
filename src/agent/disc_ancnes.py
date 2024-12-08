@@ -350,25 +350,27 @@ class ANCNESTrainer(PNESTrainer):
 			'frame_limit': self.frame_limit,
 			'buffer_prob': self.buffer_prob
 		}
+		
+		self.diversity_worker = None
+		
+	def init_training(self):
+		# noinspection PyArgumentList
+		self.diversity_worker = DiversityWorker.remote(self.env_name, self.buffer_size)
+		worker_seeds = torch.randint(0, 2147483648, (self.population_size,)).tolist()
+		for i, seed in enumerate(worker_seeds):
+			forward_worker = [
+				RolloutWorker.remote(self.diversity_worker, **self.diversity_worker_hyper_param) for _ in
+				range(self.sampling_size)]
+			# noinspection PyArgumentList
+			actor = NESWorker.remote(i, seed, self.nn_class, self.model_hyper_param, self.parameter_scale,
+			                         forward_worker, self.diversity_worker, self.folder,
+			                         **self.search_hyper_param)
+			self.search_workers.append(actor)
 	
 	def train(self):
 		"""开始训练
 		"""
-		# noinspection PyArgumentList
-		diversity_worker = DiversityWorker.remote(self.env_name, self.buffer_size)
-		worker_seeds = torch.randint(0, 2147483648, (self.population_size,)).tolist()
-		forward_workers = []
-		for i, seed in enumerate(worker_seeds):
-			forward_worker = [
-				RolloutWorker.remote(diversity_worker, **self.diversity_worker_hyper_param) for _ in
-				range(self.sampling_size)]
-			forward_workers.extend(forward_worker)
-			# noinspection PyArgumentList
-			actor = NESWorker.remote(i, seed, self.nn_class, self.model_hyper_param, self.parameter_scale,
-			                         forward_worker, diversity_worker, self.folder,
-			                         **self.search_hyper_param)
-			self.search_workers.append(actor)
-		self.forward_pool = ActorPool(forward_workers)
+		self.init_training()
 		
 		start_time = time.time()
 		cost_frames = 0
@@ -401,7 +403,7 @@ class ANCNESTrainer(PNESTrainer):
 				cost_frames += frames
 			assert len(best_samples_fits) == self.population_size
 			
-			update_buffer_task = diversity_worker.update_buffer.remote(frame_futures)
+			update_buffer_task = self.diversity_worker.update_buffer.remote(frame_futures)
 			search_tasks2 = [search_worker.search2.remote(progress, action_probs) for search_worker in
 			                 self.search_workers]
 			# print(search_tasks) # diff
