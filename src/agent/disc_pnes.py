@@ -460,7 +460,7 @@ def get_parser():
 	
 	# Train
 	arg_parser.add_argument('--time_budget', default=300, type=int, help='Time budget in minutes')
-	arg_parser.add_argument('--total_frames', default=750000, type=int, help='Number of total frames limit')
+	arg_parser.add_argument('--total_frames', default=25000000, type=int, help='Number of total frames limit')
 	arg_parser.add_argument('--enable_time_limit', default=False, type=bool, help='Enable time limit')
 	arg_parser.add_argument('--population_size', default=5, type=int, help='Population size')
 	arg_parser.add_argument('--sampling_size', default=15, type=int, help='Sampling size for each individual')
@@ -537,5 +537,5 @@ if __name__ == '__main__':
 	run_args = parser.parse_args()
 	
 	# train_once(run_args)
-	train_groups(run_args, 5)
+	train_groups(run_args, 10)
 # trainer.test_best()

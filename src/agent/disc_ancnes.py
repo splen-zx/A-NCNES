@@ -17,7 +17,8 @@ from src.nn import nn_utils
 from src.plt_utils import *
 
 AGENT_NAME = "A-NCNES"
-
+RESULT_ROOT_DIR = f"/results/{AGENT_NAME}"
+os.makedirs(RESULT_ROOT_DIR, exist_ok=True)
 
 @ray.remote(num_cpus=1)
 class RolloutWorker:
@@ -367,109 +368,123 @@ class ANCNESTrainer(PNESTrainer):
 			                         **self.search_hyper_param)
 			self.search_workers.append(actor)
 	
-	def train(self):
-		"""开始训练
-		"""
-		self.init_training()
+	def train_step(self, progress):
+		search_tasks1 = []
+		step_frames = 0
+		for search_worker in self.search_workers:
+			search_tasks1.append(search_worker.search1.remote())
+		# print(search_tasks) # diff
 		
-		start_time = time.time()
-		cost_frames = 0
-		print("+++++=====Training start=====+++++")
-		while cost_frames < self.total_frames:
-			s = time.time()
-			if self.enable_time_limit:
-				t = s - start_time
-				if t >= self.time_budget:
-					break
-				progress = max(t / self.time_budget, cost_frames / self.total_frames)
-			else:
-				progress = cost_frames / self.total_frames
-			
-			search_tasks1 = []
-			
-			for search_worker in self.search_workers:
-				search_tasks1.append(search_worker.search1.remote())
-			# print(search_tasks) # diff
-			
-			search_res1 = ray.get(search_tasks1)  # 同步
-			
-			frame_futures = []
-			action_probs = []
-			best_samples_fits = []
-			for frame_fut, action_prob, fit, frames in search_res1:
-				frame_futures.extend(frame_fut)
-				action_probs.append(action_prob)
-				best_samples_fits.append(fit)
-				cost_frames += frames
-			assert len(best_samples_fits) == self.population_size
-			
-			update_buffer_task = self.diversity_worker.update_buffer.remote(frame_futures)
-			search_tasks2 = [search_worker.search2.remote(progress, action_probs) for search_worker in
-			                 self.search_workers]
-			# print(search_tasks) # diff
-			ray.get(update_buffer_task)
-			ray.get(search_tasks2)  # 同步
-			
-			step_best_training_fit, step_best_index = max((fit, i) for i, fit in enumerate(best_samples_fits))
-			step_best_solution = ray.get(self.search_workers[step_best_index].get_best_solution.remote())
-			# TODO: test step_best_solution
-			
-			print(f"\n==={cost_frames}/{self.total_frames}=== {time.time() - s}s")
-			print(best_samples_fits)
-		print("+++++=====Training ended=====+++++")
+		search_res1 = ray.get(search_tasks1)  # 同步
+		
+		frame_futures = []
+		action_probs = []
+		best_samples_fits = []
+		for frame_fut, action_prob, fit, frames in search_res1:
+			frame_futures.extend(frame_fut)
+			action_probs.append(action_prob)
+			best_samples_fits.append(fit)
+			step_frames += frames
+		assert len(best_samples_fits) == self.population_size
+		
+		update_buffer_task = self.diversity_worker.update_buffer.remote(frame_futures)
+		search_tasks2 = [search_worker.search2.remote(progress, action_probs) for search_worker in
+		                 self.search_workers]
+		# print(search_tasks) # diff
+		ray.get(update_buffer_task)
+		ray.get(search_tasks2)  # 同步
+		
+		step_best_training_fit, step_best_index = max((fit, i) for i, fit in enumerate(best_samples_fits))
+		step_best_solution = ray.get(self.search_workers[step_best_index].get_best_solution.remote())
+		
+		return step_best_solution, best_samples_fits, step_frames
 
 
-def main(args):
-	task_name = f"{args.env_name}"  # input("task_name:")
+def get_parser():
+	arg_parser = argparse.ArgumentParser(description=AGENT_NAME)
 	
-	os.makedirs(f"/results/{AGENT_NAME}/{task_name}/", exist_ok=True)
-	os.chdir(f"/results/{AGENT_NAME}/{task_name}/")
+	# Train
+	arg_parser.add_argument('--time_budget', default=300, type=int, help='Time budget in minutes')
+	arg_parser.add_argument('--total_frames', default=25000000, type=int, help='Number of total frames limit')
+	arg_parser.add_argument('--enable_time_limit', default=False, type=bool, help='Enable time limit')
+	arg_parser.add_argument('--population_size', default=5, type=int, help='Population size')
+	arg_parser.add_argument('--sampling_size', default=15, type=int, help='Sampling size for each individual')
+	arg_parser.add_argument('--buffer_size', default=10000, type=int, help='Buffer_size')
+	arg_parser.add_argument('--buffer_updating_rate', default=0.4, type=float, help='The rate to update buffer each step')
+	arg_parser.add_argument('--frame_limit', default=10000, type=int, help='Frame limit for each rollout')
+	
+	arg_parser.add_argument('--lr_mean', default=0.2, type=float, help='Initial value of mean')
+	arg_parser.add_argument('--lr_sigma', default=0.1, type=float, help='Initial value of sigma')
+	arg_parser.add_argument('--phi', default=0.001, type=float, help='Initial value of the tradeoff between F and D')
+	
+	# Module
+	arg_parser.add_argument('--nn_class', default="DQN_Atari", type=str, help='The network model')
+	arg_parser.add_argument('--input_channels', default=4, type=int, help='The number of frames to input')
+	
+	# Environment
+	arg_parser.add_argument('--env_name', default="Freeway", type=str, help='The network model')
+	
+	# Test
+	arg_parser.add_argument('--test_episodes', default=15, type=int, help='The number of episodes in testing')
+	
+	return arg_parser
+	
+	
+def train_once(args, task_name=None):
+	if task_name is None:
+		task_name = f"{args.env_name}"  # input("task_name:")
+	os.makedirs(f"./{task_name}/", exist_ok=False)
+	os.chdir(f"./{task_name}/")
 	print(os.getcwd())
 	os.makedirs(f"logs/", exist_ok=True)
-	torch.manual_seed(0)
 	
-	trainer = ANCNESTrainer(args)
+	# torch.manual_seed(0)
+	trainer = PNESTrainer(args)
 	
 	try:
 		trainer.train()
 	except Exception as e:
 		print(e)
 	finally:
-		trainer.final()
+		res = trainer.final()
+	
+	os.chdir('../')
+	return res
+
+
+def train_groups(group_args, num_tasks=10, task_group_name=None):
+	if task_group_name is None:
+		task_group_name = f"{num_tasks}-{group_args.env_name}"
+	os.makedirs(f"./{task_group_name}/", exist_ok=False)
+	os.chdir(f"./{task_group_name}/")
+	ress = []
+	for i in range(num_tasks):
+		ress.append(train_once(group_args, f'{i}'))
+	training_fitness = []
+	average_test_score = []
+	iterations = None
+	for res in ress:
+		training_fitness.append(res['training_fitness'])
+		average_test_score.append(res['average_test_score'])
+		if iterations is None:
+			iterations = len(res['training_fitness'])
+		else:
+			iterations = max(iterations, len(res['training_fitness']))
+	training_fitness = [arr[:iterations] for arr in training_fitness]
+	average_test_score = [arr[:iterations] for arr in average_test_score]
+	show_multi_line_and_area(list(range(1, iterations + 1)), (training_fitness, average_test_score),
+	                         f"{AGENT_NAME}: {group_args.env_name} training result with {num_tasks} runs",
+	                         "sum_result", ['Training Fitness', 'Average Test Score'],
+	                         "Score")
+	os.chdir(f"../")
 
 
 if __name__ == '__main__':
-	# 参数
-	parser = argparse.ArgumentParser(description=AGENT_NAME)
-	
-	# Train
-	parser.add_argument('--time_budget', default=300, type=int, help='Time budget in minutes')
-	parser.add_argument('--total_frames', default=25000000, type=int, help='Number of total frames limit')
-	parser.add_argument('--enable_time_limit', default=False, type=bool, help='Enable time limit')
-	parser.add_argument('--population_size', default=5, type=int, help='Population size')
-	parser.add_argument('--sampling_size', default=15, type=int, help='Sampling size for each individual')
-	parser.add_argument('--buffer_size', default=10000, type=int, help='Buffer_size')
-	parser.add_argument('--buffer_updating_rate', default=0.4, type=float, help='The rate to update buffer each step')
-	parser.add_argument('--frame_limit', default=10000, type=int, help='Frame limit for each rollout')
-	
-	parser.add_argument('--lr_mean', default=0.2, type=float, help='Initial value of mean')
-	parser.add_argument('--lr_sigma', default=0.1, type=float, help='Initial value of sigma')
-	parser.add_argument('--phi', default=0.001, type=float, help='Initial value of the tradeoff between F and D')
-	# Network
-	parser.add_argument('--nn_class', default="DQN_Atari", type=str, help='The network model')
-	parser.add_argument('--input_channels', default=4, type=int, help='The number of frames to input')
-	
-	# Environment
-	parser.add_argument('--env_name', default="Breakout", type=str, help='The network model')
-	
-	# for Test
-	# parser.add_argument('--train_size', default=2000, type=int, help='Training data size')
-	# parser.add_argument('--val_size', default=500, type=int, help='Validation data size')
-	# parser.add_argument('--test_size', default=500, type=int, help='Test data size')
-	# parser.add_argument('--batch_size', default=256, type=int, help='Batch size')
-	ray.init()
+	os.chdir(RESULT_ROOT_DIR)
+	parser = get_parser()
 	run_args = parser.parse_args()
 	
-	main(run_args)
-
+	# train_once(run_args)
+	train_groups(run_args, 10)
 # trainer.test_best()
+
