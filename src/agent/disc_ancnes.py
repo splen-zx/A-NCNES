@@ -439,7 +439,7 @@ def train_once(args, task_name=None):
 	os.makedirs(f"logs/", exist_ok=True)
 	
 	# torch.manual_seed(0)
-	trainer = PNESTrainer(args)
+	trainer = ANCNESTrainer(args)
 	
 	try:
 		trainer.train()
@@ -480,10 +480,10 @@ def train_groups(group_args, num_tasks=10, task_group_name=None):
 
 
 if __name__ == '__main__':
-	os.chdir(RESULT_ROOT_DIR)
 	parser = get_parser()
 	run_args = parser.parse_args()
 	
+	os.chdir(RESULT_ROOT_DIR)
 	# train_once(run_args)
 	train_groups(run_args, 10)
 # trainer.test_best()
