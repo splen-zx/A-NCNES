@@ -14,7 +14,7 @@ import torch
 from src.env.utils import get_env
 from src.nn import nn_utils
 from src.plt_utils import *
-from utils import RemoteRolloutWorker
+from utils import RemoteRolloutWorker, parallel_rollout
 
 AGENT_NAME = "PNES"
 RESULT_ROOT_DIR = f"/results/{AGENT_NAME}"
@@ -262,7 +262,8 @@ class PNESTrainer:
 		self.search_workers = []
 		self.best_solutions = []
 		self.best_training_fitness = []
-		self.best_test_res = []
+		self.test_futures = []
+		self.best_test_res = None
 		self.testing_forward_pool = ActorPool([RemoteRolloutWorker.remote(
 			self.nn_class, self.model_hyper_param, self.env_name, self.frame_limit, envs_num=self.test_episodes), ])
 		self.new_testing_worker = 1
@@ -345,23 +346,31 @@ class PNESTrainer:
 		self.best_training_fitness.append(step_best_training_fit)
 		return ray.get(self.search_workers[step_best_index].get_best_solution.remote())
 	
-	def training_test(self, solution, step_time):
-		self.testing_forward_pool.submit(lambda a, v: a.rollout.remote(v), solution)
-		if self.new_testing_worker > 0:
-			self.testing_forward_pool.push(RemoteRolloutWorker.remote(
-				self.nn_class, self.model_hyper_param, self.env_name, self.frame_limit, self.test_episodes))
-			self.new_testing_worker -= 1
-		else:
-			s_t = time.time()
-			self.best_test_res.append(self.testing_forward_pool.get_next())
-			waiting_time = time.time() - s_t
-			if waiting_time > 3.0:
-				self.new_testing_worker += (int(waiting_time / step_time) + 1)
-				print(f'Waiting time: {waiting_time}, adding {(int(waiting_time / step_time) + 1)} worker')
+	# def training_test(self, solution, step_time):
+	# 	self.testing_forward_pool.submit(lambda a, v: a.rollout.remote(v), solution)
+	# 	if self.new_testing_worker > 0:
+	# 		self.testing_forward_pool.push(RemoteRolloutWorker.remote(
+	# 			self.nn_class, self.model_hyper_param, self.env_name, self.frame_limit, self.test_episodes))
+	# 		self.new_testing_worker -= 1
+	# 	else:
+	# 		s_t = time.time()
+	# 		self.best_test_res.append(self.testing_forward_pool.get_next())
+	# 		waiting_time = time.time() - s_t
+	# 		if waiting_time > 3.0:
+	# 			self.new_testing_worker += (int(waiting_time / step_time) + 1)
+	# 			print(f'Waiting time: {waiting_time}, adding {(int(waiting_time / step_time) + 1)} worker', flush=True)
+	
+	def training_test(self, solution):
+		future = parallel_rollout.remote(self.nn_class, self.model_hyper_param, self.env_name, None, self.frame_limit,
+		                        self.test_episodes, solution)
+		self.test_futures.append(future)
+	
+	# def get_training_test(self):
+	# 	while self.testing_forward_pool.has_next():
+	# 		self.best_test_res.append(self.testing_forward_pool.get_next())
 	
 	def get_training_test(self):
-		while self.testing_forward_pool.has_next():
-			self.best_test_res.append(self.testing_forward_pool.get_next())
+		self.best_test_res = ray.get(self.test_futures)
 			
 	def init_training(self):
 		worker_seeds = torch.randint(0, 2147483648, (self.population_size,)).tolist()
@@ -420,7 +429,7 @@ class PNESTrainer:
 			print(best_samples_fits)
 			
 			# test step_best_solution
-			self.training_test(step_best_solution, step_time)
+			self.training_test(step_best_solution)
 		
 		self.get_training_test()
 		print("+++++=====Training ended=====+++++")
@@ -460,7 +469,7 @@ def get_parser():
 	
 	# Train
 	arg_parser.add_argument('--time_budget', default=300, type=int, help='Time budget in minutes')
-	arg_parser.add_argument('--total_frames', default=25000000, type=int, help='Number of total frames limit')
+	arg_parser.add_argument('--total_frames', default=250000, type=int, help='Number of total frames limit')
 	arg_parser.add_argument('--enable_time_limit', default=False, type=bool, help='Enable time limit')
 	arg_parser.add_argument('--population_size', default=5, type=int, help='Population size')
 	arg_parser.add_argument('--sampling_size', default=15, type=int, help='Sampling size for each individual')
@@ -537,5 +546,5 @@ if __name__ == '__main__':
 	
 	os.chdir(RESULT_ROOT_DIR)
 	# train_once(run_args)
-	train_groups(run_args, 10)
+	train_groups(run_args, 3)
 # trainer.test_best()

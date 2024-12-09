@@ -58,10 +58,51 @@ class RolloutWorker:
 class RemoteRolloutWorker(RolloutWorker):
 	pass
 
+
+@ray.remote
+def parallel_rollout(nn_model, model_args, env_name, env_param, frame_limit, envs_num, model_param):
+	model = nn_model(**model_args)
+	model.set_parameter_grad(grad=False)
+	envs = [get_env(env_name, env_param) for _ in range(envs_num)]
+	
+	with torch.no_grad():
+		device = nn_utils.get_device()
+		model.set_parameters(model_param)
+		g_reward = 0
+		step = 0
+		max_step = 0
+		envs = envs.copy()
+		env_seed = [random.randint(0, 2147483647) for _ in range(envs_num)]
+		
+		states = [env.reset(seed=seed)[0] for env, seed in zip(envs, env_seed)]
+		while max_step < frame_limit and len(states) > 0:
+			obs = torch.tensor(np.array(states)).to(device).float() / 255
+			action_prob = model(obs)
+			actions = torch.argmax(action_prob, dim=-1)
+			
+			step_ended_env = []
+			states = []
+			for i, env_action in enumerate(zip(envs, actions)):
+				env, action = env_action
+				state, reward, terminated, truncated, info = env.step(action.item())
+				g_reward += reward
+				if terminated or truncated:
+					step_ended_env.append(i)
+				else:
+					states.append(state)
+			step += len(envs)
+			for i in step_ended_env[::-1]:
+				env = envs.pop(i)
+				env.close()
+				del env
+			max_step += 1
+	return g_reward / envs_num, step / envs_num
+
+
 if __name__ == "__main__":
 	from src.nn.dqn import DQN_Atari
-	r = RolloutWorker(DQN_Atari, {'num_actions':3}, 'Freeway', 10000)
+	
+	r = RolloutWorker(DQN_Atari, {'num_actions': 3}, 'Freeway', 10000)
 	s = time.time()
 	r.rollout(None)
-	print(time.time()-s)
-	
+	print(time.time() - s)
