@@ -111,16 +111,11 @@ class NESSearch:
 	
 	def draw(self, folder):
 		os.chdir(folder)
-		# torch.save(self.best_solution[0], f"./Worker{self.worker_id}_best_solution_{self.best_solution[1]}.pt")
-		x = list(range(1, len(self.best_fits) + 1))
 		
+		x = list(range(1, len(self.best_fits) + 1))
 		saving_pic_multi_line(x, (self.best_fits, self.avg_fits), f'Training Fitness with init_eta: {self.init_eta}',
 		                      f'Worker{self.worker_id}_fitness', ['best fitness', 'average fitness'],
 		                      'Fitness')
-		# return best solution
-		
-		# show_line_and_area([0,]+x, list(zip(*self.log_infos["means"])), "Means change of some params", f"Worker{self.worker_id}_Means_fig_1")
-		# show_line_and_area([0,]+x, list(zip(*self.log_infos["sigmas"])), "Sigmas change of some params", f"Worker{self.worker_id}_Sigmas_fig_1")
 		return self.best_solution[0]
 	
 	def init_individual(self):
@@ -205,7 +200,6 @@ class NESSearch:
 		if (self.best_solution is None) or step_best_solution[1] > self.best_solution[1]:
 			self.best_solution = step_best_solution
 		avg_fit = sum([i[1] for i in pairs]) / self.sampling_size
-		# self.logger.info(f"best_fit: {step_best_solution[1]}, avg_fit: {avg_fit}")
 		self.best_fits.append(step_best_solution[1])
 		self.avg_fits.append(avg_fit)
 		self.update(self.calculate_delta(pairs), self.cal_etas(progress))
@@ -313,10 +307,8 @@ class PNESTrainer:
 			env_seed = random.randint(0, 2147483647)
 		
 		g_reward = 0
-		# self.env.seed(env_seed)
 		state, info = self.env.reset(seed=env_seed)
 		images = [self.env.render()]
-		# images.append(state.__array__()[0, :, :])
 		while True:
 			obs = torch.from_numpy(state.__array__()[None] / 255).float()
 			action_prob = model(obs)
@@ -346,28 +338,10 @@ class PNESTrainer:
 		self.best_training_fitness.append(step_best_training_fit)
 		return ray.get(self.search_workers[step_best_index].get_best_solution.remote())
 	
-	# def training_test(self, solution, step_time):
-	# 	self.testing_forward_pool.submit(lambda a, v: a.rollout.remote(v), solution)
-	# 	if self.new_testing_worker > 0:
-	# 		self.testing_forward_pool.push(RemoteRolloutWorker.remote(
-	# 			self.nn_class, self.model_hyper_param, self.env_name, self.frame_limit, self.test_episodes))
-	# 		self.new_testing_worker -= 1
-	# 	else:
-	# 		s_t = time.time()
-	# 		self.best_test_res.append(self.testing_forward_pool.get_next())
-	# 		waiting_time = time.time() - s_t
-	# 		if waiting_time > 3.0:
-	# 			self.new_testing_worker += (int(waiting_time / step_time) + 1)
-	# 			print(f'Waiting time: {waiting_time}, adding {(int(waiting_time / step_time) + 1)} worker', flush=True)
-	
 	def training_test(self, solution):
 		future = parallel_rollout.remote(self.nn_class, self.model_hyper_param, self.env_name, None, self.frame_limit,
 		                        self.test_episodes, solution)
 		self.test_futures.append(future)
-	
-	# def get_training_test(self):
-	# 	while self.testing_forward_pool.has_next():
-	# 		self.best_test_res.append(self.testing_forward_pool.get_next())
 	
 	def get_training_test(self):
 		self.best_test_res = ray.get(self.test_futures)
@@ -434,23 +408,10 @@ class PNESTrainer:
 		self.get_training_test()
 		print("+++++=====Training ended=====+++++")
 	
-	# def log_training_setting(self):
-	# 	with open("./training_setting",'r') as f:
-	
 	def final(self):
-		
 		ray.get([search_worker.draw.remote(self.folder) for search_worker in self.search_workers])
 		
-		# best_s = 0
-		# best_f = None
-		# for i, solution in enumerate(best_solutions):
-		# 	for j in range(20):
-		# 		score, frames = self.test_individual(solution)
-		# 		if score >= best_s:
-		# 			best_s = score
-		# 			best_f = frames
-		# if best_f is not None:
-		# 		display_frames_as_gif(best_f, f"best_final_test_score_{best_s}")
+		
 		x = list(range(1, len(self.best_training_fitness) + 1))
 		average_test_score, average_test_steps = tuple(zip(*self.best_test_res))
 		saving_pic_multi_line(x, (self.best_training_fitness, average_test_score), f'Training Fitness',
@@ -461,6 +422,7 @@ class PNESTrainer:
 		                "average_test_steps": average_test_steps}
 		with open('config_result.json', 'w') as f:
 			json.dump(self.args.__dict__ | training_res, f)
+		# TODO: torch.save(best solution)
 		return training_res
 
 

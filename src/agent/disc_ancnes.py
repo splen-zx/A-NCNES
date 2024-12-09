@@ -60,9 +60,6 @@ class RolloutWorker:
 	
 	def diversity_sampling(self):
 		with torch.no_grad():
-			# buffer = ray.get(ray.get(self.diversity_worker.get_buffer_fut.remote()))
-			# dataset = TensorDataset(torch.stack(tuple(buffer), dim=0))
-			# loader = DataLoader(dataset, 500, False)
 			loader = ray.get(ray.get(self.diversity_worker.get_buffer_fut.remote()))
 			sum_action_prob = None
 			for batch in loader:
@@ -176,16 +173,11 @@ class NESSearch:
 	
 	def draw(self, folder):
 		os.chdir(folder)
-		# torch.save(self.best_solution[0], f"./Worker{self.worker_id}_best_solution_{self.best_solution[1]}.pt")
-		x = list(range(1, len(self.best_fits) + 1))
 		
+		x = list(range(1, len(self.best_fits) + 1))
 		saving_pic_multi_line(x, (self.best_fits, self.avg_fits), f'Training Fitness with init_eta: {self.init_eta}',
 		                      f'Worker{self.worker_id}_fitness', ['best fitness', 'average fitness'],
 		                      'Fitness')
-		# return best solution
-		
-		# show_line_and_area([0,]+x, list(zip(*self.log_infos["means"])), "Means change of some params", f"Worker{self.worker_id}_Means_fig_1")
-		# show_line_and_area([0,]+x, list(zip(*self.log_infos["sigmas"])), "Sigmas change of some params", f"Worker{self.worker_id}_Sigmas_fig_1")
 		return self.best_solution[0]
 	
 	def init_individual(self):
@@ -213,9 +205,6 @@ class NESSearch:
 		return sum_action_prob / len(loader.dataset)
 	
 	def get_action_probs(self):
-		# buffer = ray.get(ray.get(self.diversity_worker.get_buffer_fut.remote()))
-		# dataset = TensorDataset(torch.stack(tuple(buffer), dim=0))
-		# loader = DataLoader(dataset, 500, False)
 		loader = ray.get(ray.get(self.diversity_worker.get_buffer_fut.remote()))
 		return [self.diversity_sampling(sample, loader) for sample in self.samples]
 	
@@ -316,7 +305,6 @@ class NESSearch:
 		if (self.best_solution is None) or step_best_solution[1] > self.best_solution[1]:
 			self.best_solution = step_best_solution
 		avg_fit = sum([i[1] for i in pairs]) / self.sampling_size
-		# self.logger.info(f"best_fit: {step_best_solution[1]}, avg_fit: {avg_fit}")
 		self.best_fits.append(step_best_solution[1])
 		self.avg_fits.append(avg_fit)
 		
