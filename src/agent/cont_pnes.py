@@ -415,10 +415,7 @@ if __name__ == '__main__':
 	ray.init()
 	trainer = PNESTrainer(params)
 
-	try:
-		trainer.train()
-	except Exception as e:
-		print(e)
-	finally:
-		trainer.final()
+	trainer.train()
+	res = trainer.final()
+	
 # trainer.test_best()

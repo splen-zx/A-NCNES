@@ -60,9 +60,10 @@ class RolloutWorker:
 	
 	def diversity_sampling(self):
 		with torch.no_grad():
-			buffer = ray.get(ray.get(self.diversity_worker.get_buffer_fut.remote()))
-			dataset = TensorDataset(torch.stack(tuple(buffer), dim=0))
-			loader = DataLoader(dataset, 500, False)
+			# buffer = ray.get(ray.get(self.diversity_worker.get_buffer_fut.remote()))
+			# dataset = TensorDataset(torch.stack(tuple(buffer), dim=0))
+			# loader = DataLoader(dataset, 500, False)
+			loader = ray.get(ray.get(self.diversity_worker.get_buffer_fut.remote()))
 			sum_action_prob = None
 			for batch in loader:
 				action_prob = self.model(batch[0])
@@ -71,7 +72,7 @@ class RolloutWorker:
 					sum_action_prob = action_prob
 				else:
 					sum_action_prob = sum_action_prob + action_prob
-		return sum_action_prob / len(buffer)
+		return sum_action_prob / len(loader.dataset)
 
 
 @ray.remote
@@ -91,7 +92,7 @@ class DiversityWorker:
 		while len(self.buffer) < self.buffer_size:
 			action = self.env.action_space.sample()
 			state, reward, terminated, truncated, info = self.env.step(action)
-			self.buffer.append(torch.tensor(state).to(nn_utils.get_device()).float() / 255)
+			self.buffer.append(torch.tensor(state).float() / 255)
 			done = terminated or truncated
 			if done:
 				# self.env.seed(self.env_seed)
@@ -99,13 +100,17 @@ class DiversityWorker:
 				self.env_seed += 1
 				self.env.reset(seed=self.env_seed)
 		
-		self.buffer_fut = ray.put(self.buffer)
+		dataset = TensorDataset(torch.stack(tuple(self.buffer), dim=0).to(nn_utils.get_device()))
+		loader = DataLoader(dataset, 500, False)
+		self.buffer_fut = ray.put(loader)
 	
 	def update_buffer(self, frame_futures):
 		for fut in frame_futures:
 			self.buffer.extend(ray.get(fut))
 		random.shuffle(self.buffer)
-		self.buffer_fut = ray.put(self.buffer)
+		dataset = TensorDataset(torch.stack(tuple(self.buffer), dim=0).to(nn_utils.get_device()))
+		loader = DataLoader(dataset, 500, False)
+		self.buffer_fut = ray.put(loader)
 	
 	def get_buffer_fut(self):
 		return self.buffer_fut
@@ -169,8 +174,9 @@ class NESSearch:
 		logger.addHandler(stream_handler)
 		return logger
 	
-	def draw(self):
-		torch.save(self.best_solution[0], f"./Worker{self.worker_id}_best_solution_{self.best_solution[1]}.pt")
+	def draw(self, folder):
+		os.chdir(folder)
+		# torch.save(self.best_solution[0], f"./Worker{self.worker_id}_best_solution_{self.best_solution[1]}.pt")
 		x = list(range(1, len(self.best_fits) + 1))
 		
 		saving_pic_multi_line(x, (self.best_fits, self.avg_fits), f'Training Fitness with init_eta: {self.init_eta}',
@@ -207,9 +213,10 @@ class NESSearch:
 		return sum_action_prob / len(loader.dataset)
 	
 	def get_action_probs(self):
-		buffer = ray.get(ray.get(self.diversity_worker.get_buffer_fut.remote()))
-		dataset = TensorDataset(torch.stack(tuple(buffer), dim=0))
-		loader = DataLoader(dataset, 500, False)
+		# buffer = ray.get(ray.get(self.diversity_worker.get_buffer_fut.remote()))
+		# dataset = TensorDataset(torch.stack(tuple(buffer), dim=0))
+		# loader = DataLoader(dataset, 500, False)
+		loader = ray.get(ray.get(self.diversity_worker.get_buffer_fut.remote()))
 		return [self.diversity_sampling(sample, loader) for sample in self.samples]
 	
 	@staticmethod
@@ -219,6 +226,9 @@ class NESSearch:
 				print(f"Line {line}: {name} has nan value.")
 				return True
 		return False
+	
+	def get_best_solution(self):
+		return self.best_solution[0]
 	
 	def calculate_delta(self, sorted_pairs):
 		mean, sigma = self.individual
@@ -394,10 +404,7 @@ class ANCNESTrainer(PNESTrainer):
 		ray.get(update_buffer_task)
 		ray.get(search_tasks2)  # 同步
 		
-		step_best_training_fit, step_best_index = max((fit, i) for i, fit in enumerate(best_samples_fits))
-		step_best_solution = ray.get(self.search_workers[step_best_index].get_best_solution.remote())
-		
-		return step_best_solution, best_samples_fits, step_frames
+		return best_samples_fits, step_frames
 
 
 def get_parser():
@@ -441,12 +448,8 @@ def train_once(args, task_name=None):
 	# torch.manual_seed(0)
 	trainer = ANCNESTrainer(args)
 	
-	try:
-		trainer.train()
-	except Exception as e:
-		print(e)
-	finally:
-		res = trainer.final()
+	trainer.train()
+	res = trainer.final()
 	
 	os.chdir('../')
 	return res

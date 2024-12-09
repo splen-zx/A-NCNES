@@ -400,8 +400,7 @@ class PNESTrainer:
 			best_samples_fits.append(fit)
 			step_frames += frames
 		
-		step_best_solution = self.get_best_solution(best_samples_fits)
-		return step_best_solution, best_samples_fits, step_frames
+		return best_samples_fits, step_frames
 	
 	def train(self):
 		"""开始训练
@@ -421,7 +420,8 @@ class PNESTrainer:
 			else:
 				progress = cost_frames / self.total_frames
 			
-			step_best_solution, best_samples_fits, step_frames = self.train_step(progress)
+			best_samples_fits, step_frames = self.train_step(progress)
+			step_best_solution = self.get_best_solution(best_samples_fits)
 			cost_frames += step_frames
 			
 			step_time = time.time() - s
@@ -469,7 +469,7 @@ def get_parser():
 	
 	# Train
 	arg_parser.add_argument('--time_budget', default=300, type=int, help='Time budget in minutes')
-	arg_parser.add_argument('--total_frames', default=250000, type=int, help='Number of total frames limit')
+	arg_parser.add_argument('--total_frames', default=25000000, type=int, help='Number of total frames limit')
 	arg_parser.add_argument('--enable_time_limit', default=False, type=bool, help='Enable time limit')
 	arg_parser.add_argument('--population_size', default=5, type=int, help='Population size')
 	arg_parser.add_argument('--sampling_size', default=15, type=int, help='Sampling size for each individual')
@@ -494,20 +494,18 @@ def get_parser():
 def train_once(args, task_name=None):
 	if task_name is None:
 		task_name = f"{args.env_name}"  # input("task_name:")
+		
 	os.makedirs(f"./{task_name}/", exist_ok=False)
 	os.chdir(f"./{task_name}/")
 	print(os.getcwd())
+	
 	os.makedirs(f"logs/", exist_ok=True)
 	
 	# torch.manual_seed(0)
 	trainer = PNESTrainer(args)
 	
-	try:
-		trainer.train()
-	except Exception as e:
-		print(e)
-	finally:
-		res = trainer.final()
+	trainer.train()
+	res = trainer.final()
 	
 	os.chdir('../')
 	return res
@@ -516,8 +514,10 @@ def train_once(args, task_name=None):
 def train_groups(group_args, num_tasks=10, task_group_name=None):
 	if task_group_name is None:
 		task_group_name = f"{num_tasks}-{group_args.env_name}"
+		
 	os.makedirs(f"./{task_group_name}/", exist_ok=False)
 	os.chdir(f"./{task_group_name}/")
+	
 	ress = []
 	for i in range(num_tasks):
 		ress.append(train_once(group_args, f'{i}'))
@@ -546,5 +546,5 @@ if __name__ == '__main__':
 	
 	os.chdir(RESULT_ROOT_DIR)
 	# train_once(run_args)
-	train_groups(run_args, 3)
+	train_groups(run_args, 10)
 # trainer.test_best()
