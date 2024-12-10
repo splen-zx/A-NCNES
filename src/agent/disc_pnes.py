@@ -466,7 +466,7 @@ def train_once(args, task_name=None):
 	if task_name is None:
 		task_name = f"{args.env_name}"  # input("task_name:")
 	
-	os.makedirs(f"./{task_name}/", exist_ok=False)
+	os.makedirs(f"./{task_name}/", exist_ok=True)
 	os.chdir(f"./{task_name}/")
 	print(os.getcwd())
 	
@@ -486,7 +486,7 @@ def train_groups(group_args, task_group_name=None):
 	num_trainings = group_args.trainings
 	if task_group_name is None:
 		task_group_name = f"{num_trainings}-{group_args.env_name}"
-	os.makedirs(f"./{task_group_name}/", exist_ok=False)
+	os.makedirs(f"./{task_group_name}/", exist_ok=True)
 	os.chdir(f"./{task_group_name}/")
 	
 	ress = []
