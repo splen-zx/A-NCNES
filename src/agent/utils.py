@@ -107,15 +107,15 @@ def get_best_tested_solution(prev_future, testing_future, per_step=False):
 		best_score = None
 		best_solution_future = None
 	else:
-		test_res, best_score, best_solution_future = ray.get(prev_future)
+		test_res, best_score, best_solution_future = prev_future
 		
-	reward, step, solution_future = ray.get(testing_future)
+	reward, step, solution_future = testing_future
 	if per_step:
 		score = reward / step  # TODO: not the per_step cal method
 	else:
 		score = reward
 	
-	test_res.append(score)
+	test_res.append((reward, step))
 	if (best_score is None) or (best_score <= score):
 		best_score = score
 		best_solution_future = solution_future

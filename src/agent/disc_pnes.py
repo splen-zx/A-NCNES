@@ -14,7 +14,7 @@ import torch
 from src.env.utils import get_env
 from src.nn import nn_utils
 from src.plt_utils import *
-from utils import RemoteRolloutWorker, parallel_rollout
+from utils import RemoteRolloutWorker, parallel_rollout, get_best_tested_solution
 
 AGENT_NAME = "PNES"
 RESULT_ROOT_DIR = f"/results/{AGENT_NAME}"
@@ -266,7 +266,7 @@ class PNESTrainer:
 		self.search_workers = []
 		self.best_solutions = []
 		self.best_training_fitness = []
-		self.test_futures = []
+		self.test_futures = None
 		self.best_test_res = None
 		self.testing_forward_pool = ActorPool([RemoteRolloutWorker.remote(
 			self.nn_class, self.model_hyper_param, self.env_name, self.frame_limit, envs_num=self.test_episodes), ])
@@ -348,7 +348,7 @@ class PNESTrainer:
 	def training_test(self, solution):
 		future = parallel_rollout.remote(self.nn_class, self.model_hyper_param, self.env_name, None, self.frame_limit,
 		                                 self.test_episodes, solution)
-		self.test_futures.append(future)
+		self.test_futures = get_best_tested_solution.remote(self.test_futures, future)
 	
 	def get_training_test(self):
 		self.best_test_res = ray.get(self.test_futures)
@@ -416,8 +416,11 @@ class PNESTrainer:
 	def final(self):
 		ray.get([search_worker.draw.remote(self.folder) for search_worker in self.search_workers])
 		
+		test_res, best_score, best_solution_future = self.best_test_res
+		best_solution = ray.get(best_solution_future)
+		
 		x = list(range(1, len(self.best_training_fitness) + 1))
-		average_test_score, average_test_steps = tuple(zip(*self.best_test_res))
+		average_test_score, average_test_steps = tuple(zip(*test_res))
 		saving_pic_multi_line(x, (self.best_training_fitness, average_test_score), f'Training Fitness',
 		                      f'fitness', ['Training Fitness', 'Average Testing Result'],
 		                      'Score')
@@ -426,7 +429,7 @@ class PNESTrainer:
 		                "average_test_steps": average_test_steps}
 		with open('config_result.json', 'w') as f:
 			json.dump(self.args.__dict__ | training_res, f)
-		# TODO: torch.save(best solution)
+		torch.save(best_solution,f"best_solution_{best_score:.2f}.pt")
 		return training_res
 
 
@@ -463,7 +466,7 @@ def train_once(args, task_name=None):
 	if task_name is None:
 		task_name = f"{args.env_name}"  # input("task_name:")
 	
-	os.makedirs(f"./{task_name}/", exist_ok=True)
+	os.makedirs(f"./{task_name}/", exist_ok=False)
 	os.chdir(f"./{task_name}/")
 	print(os.getcwd())
 	
