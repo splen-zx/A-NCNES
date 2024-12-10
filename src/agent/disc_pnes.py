@@ -14,7 +14,7 @@ import torch
 from src.env.utils import get_env
 from src.nn import nn_utils
 from src.plt_utils import *
-from utils import RemoteRolloutWorker, parallel_rollout, get_best_tested_solution
+from src.agent.utils import RemoteRolloutWorker, parallel_rollout, get_best_tested_solution
 
 AGENT_NAME = "PNES"
 RESULT_ROOT_DIR = f"/results/{AGENT_NAME}"
@@ -511,12 +511,18 @@ def train_groups(group_args, task_group_name=None):
 	os.chdir(f"../")
 
 
-if __name__ == '__main__':
+def main():
+	# env_vars = os.environ
+	# for key, value in env_vars.items():
+	# 	print(f"{key}={value}")
+	
 	parser = get_parser()
 	run_args = parser.parse_args(["--trainings", "10",
 	                              '--total_frames', '25000000'])
-	
+
 	os.chdir(RESULT_ROOT_DIR)
 	# train_once(run_args)
 	train_groups(run_args)
-# trainer.test_best()
+
+if __name__ == '__main__':
+	main()

@@ -7,7 +7,6 @@ import time
 from collections import deque
 
 import ray
-from ray.util.actor_pool import ActorPool
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
