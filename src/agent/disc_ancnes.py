@@ -114,9 +114,9 @@ class DiversityWorker:
 
 
 class NESSearch:
-	def __init__(self, worker_id, random_seed, nn_model, model_param, parameter_scale, forward_workers,
-	             diversity_worker, folder,
-	             sampling_size=15, phi=0.0001, init_eta=(0.5, 0.1)):
+	def __init__(self, worker_id, random_seed, forward_workers, diversity_worker,
+	             nn_model, model_param, parameter_scale, folder,
+	             sampling_size=15, phi=0.0001, init_eta=(0.5, 0.1), elites=0):
 		
 		self.temp_iteration_res = None
 		self.avg_fits = []
@@ -124,6 +124,7 @@ class NESSearch:
 		self.sampling_size = sampling_size
 		self.init_eta = init_eta
 		self.phi = phi
+		self.elites = elites
 		
 		self.worker_id = worker_id
 		self.random_seed = random_seed
@@ -137,7 +138,7 @@ class NESSearch:
 		self.res_f = None
 		self.res_self_d = None
 		self.sum_action_prob = None
-		self.samples = None
+		self.samples = []
 		self.step = 0
 		
 		self.model = nn_model(**model_param)
@@ -189,7 +190,10 @@ class NESSearch:
 		# sample parameters
 		mean, sigma = self.individual
 		std = sigma ** 0.5
-		self.samples = [torch.randn(self.parameter_scale) * std + mean for _ in range(self.sampling_size)]
+		
+		self.samples = self.samples[:self.elites]
+		self.samples.extend(
+			[torch.randn(self.parameter_scale) * std + mean for _ in range(self.sampling_size - len(self.samples))])
 	
 	def diversity_sampling(self, model_param, loader):
 		self.model.set_parameters(model_param)
@@ -361,9 +365,7 @@ class ANCNESTrainer(PNESTrainer):
 				RolloutWorker.remote(self.diversity_worker, **self.diversity_worker_hyper_param) for _ in
 				range(self.sampling_size)]
 			# noinspection PyArgumentList
-			actor = NESWorker.remote(i, seed, self.nn_class, self.model_hyper_param, self.parameter_scale,
-			                         forward_worker, self.diversity_worker, self.folder,
-			                         **self.search_hyper_param)
+			actor = NESWorker.remote(i, seed, forward_worker, self.diversity_worker, **self.search_hyper_param)
 			self.search_workers.append(actor)
 	
 	def train_step(self, progress):
@@ -399,6 +401,7 @@ def get_parser():
 	arg_parser = argparse.ArgumentParser(description=AGENT_NAME)
 	
 	# Train
+	arg_parser.add_argument('--trainings', default=10, type=int, help='Num of training times')
 	arg_parser.add_argument('--time_budget', default=300, type=int, help='Time budget in minutes')
 	arg_parser.add_argument('--total_frames', default=25000000, type=int, help='Number of total frames limit')
 	arg_parser.add_argument('--enable_time_limit', default=False, type=bool, help='Enable time limit')
@@ -407,13 +410,14 @@ def get_parser():
 	arg_parser.add_argument('--buffer_size', default=10000, type=int, help='Buffer_size')
 	arg_parser.add_argument('--buffer_updating_rate', default=0.4, type=float, help='The rate to update buffer each step')
 	arg_parser.add_argument('--frame_limit', default=10000, type=int, help='Frame limit for each rollout')
+	arg_parser.add_argument('--elites', default=0, type=int, help='Elite solutions to protect')
 	
 	arg_parser.add_argument('--lr_mean', default=0.2, type=float, help='Initial value of mean')
 	arg_parser.add_argument('--lr_sigma', default=0.1, type=float, help='Initial value of sigma')
 	arg_parser.add_argument('--phi', default=0.001, type=float, help='Initial value of the tradeoff between F and D')
 	
 	# Module
-	arg_parser.add_argument('--nn_class', default="DQN_Atari", type=str, help='The network model')
+	arg_parser.add_argument('--nn_class', default="DQN_Atari", type=str, help='The environment name')
 	arg_parser.add_argument('--input_channels', default=4, type=int, help='The number of frames to input')
 	
 	# Environment
@@ -428,7 +432,7 @@ def get_parser():
 def train_once(args, task_name=None):
 	if task_name is None:
 		task_name = f"{args.env_name}"  # input("task_name:")
-	os.makedirs(f"./{task_name}/", exist_ok=False)
+	os.makedirs(f"./{task_name}/", exist_ok=True)
 	os.chdir(f"./{task_name}/")
 	print(os.getcwd())
 	os.makedirs(f"logs/", exist_ok=True)
@@ -443,13 +447,15 @@ def train_once(args, task_name=None):
 	return res
 
 
-def train_groups(group_args, num_tasks=10, task_group_name=None):
+def train_groups(group_args, task_group_name=None):
+	num_trainings = group_args.trainings
 	if task_group_name is None:
-		task_group_name = f"{num_tasks}-{group_args.env_name}"
-	os.makedirs(f"./{task_group_name}/", exist_ok=False)
+		task_group_name = f"{num_trainings}-{group_args.env_name}"
+	os.makedirs(f"./{task_group_name}/", exist_ok=True)
 	os.chdir(f"./{task_group_name}/")
+	
 	ress = []
-	for i in range(num_tasks):
+	for i in range(num_trainings):
 		ress.append(train_once(group_args, f'{i}'))
 	training_fitness = []
 	average_test_score = []
@@ -464,7 +470,7 @@ def train_groups(group_args, num_tasks=10, task_group_name=None):
 	training_fitness = [arr[:iterations] for arr in training_fitness]
 	average_test_score = [arr[:iterations] for arr in average_test_score]
 	show_multi_line_and_area(list(range(1, iterations + 1)), (training_fitness, average_test_score),
-	                         f"{AGENT_NAME}: {group_args.env_name} training result with {num_tasks} runs",
+	                         f"{AGENT_NAME}: {group_args.env_name} training result with {num_trainings} runs",
 	                         "sum_result", ['Training Fitness', 'Average Test Score'],
 	                         "Score")
 	os.chdir(f"../")
@@ -472,10 +478,11 @@ def train_groups(group_args, num_tasks=10, task_group_name=None):
 
 if __name__ == '__main__':
 	parser = get_parser()
-	run_args = parser.parse_args()
+	run_args = parser.parse_args(["--trainings", "2",
+	                              '--total_frames', '250000'])
 	
 	os.chdir(RESULT_ROOT_DIR)
 	# train_once(run_args)
-	train_groups(run_args, 10)
+	train_groups(run_args)
 # trainer.test_best()
 

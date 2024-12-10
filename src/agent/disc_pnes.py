@@ -54,15 +54,15 @@ class RolloutWorker:
 
 
 class NESSearch:
-	def __init__(self, worker_id, random_seed, nn_model, model_param, parameter_scale, forward_workers, folder,
-	             sampling_size=15, phi=0.0001, init_eta=(0.5, 0.1)):
+	def __init__(self, worker_id, random_seed, forward_workers, nn_model, model_param, parameter_scale, folder,
+	             sampling_size=15, init_eta=(0.5, 0.1), elites=0):
 		
 		self.temp_iteration_res = None
 		self.avg_fits = []
 		self.best_fits = []
 		self.sampling_size = sampling_size
 		self.init_eta = init_eta
-		self.phi = phi
+		self.elites = elites
 		
 		self.worker_id = worker_id
 		self.random_seed = random_seed
@@ -75,7 +75,7 @@ class NESSearch:
 		self.res_f = None
 		self.res_self_d = None
 		self.sum_action_prob = None
-		self.samples = None
+		self.samples = []
 		self.step = 0
 		
 		self.model = nn_model(**model_param)
@@ -127,7 +127,10 @@ class NESSearch:
 		# sample parameters
 		mean, sigma = self.individual
 		std = sigma ** 0.5
-		self.samples = [torch.randn(self.parameter_scale) * std + mean for _ in range(self.sampling_size)]
+		
+		self.samples = self.samples[:self.elites]
+		self.samples.extend(
+			[torch.randn(self.parameter_scale) * std + mean for _ in range(self.sampling_size - len(self.samples))])
 	
 	@staticmethod
 	def check_nan(arr, line, name):
@@ -227,22 +230,18 @@ class PNESTrainer:
 		self.time_budget = args.time_budget * 60
 		self.enable_time_limit = args.enable_time_limit
 		self.frame_limit = args.frame_limit
-		
+		self.elites = args.elites
 		# hyperparameters
 		self.lr_mean = args.lr_mean
 		self.lr_sigma = args.lr_sigma
+		# test
+		self.test_episodes = args.test_episodes
+
+		self.folder = os.getcwd()
 		
 		# check env
 		self.env_name = args.env_name
 		self.env = get_env(self.env_name)
-		
-		# test
-		self.test_episodes = args.test_episodes
-		
-		self.model_hyper_param = {"in_channels": args.input_channels,
-		                          "num_actions": int(self.env.action_space.n)}
-		self.search_hyper_param = {'sampling_size': self.sampling_size,
-		                           'init_eta': (self.lr_mean, self.lr_sigma)}
 		
 		# init normalized fitness by ranking
 		self.normalized_fitness_list = [max(math.log(self.sampling_size / 2 + 1) - math.log(i + 1), 0)
@@ -251,8 +250,19 @@ class PNESTrainer:
 		self.normalized_fitness_list = [i / temp_sum - 1 / self.sampling_size for i in self.normalized_fitness_list]
 		
 		# init distribution population
+		self.model_hyper_param = {"in_channels": args.input_channels,
+		                          "num_actions": int(self.env.action_space.n)}
+		
 		self.parameter_scale = self.get_parameter_scale()
 		
+
+		self.search_hyper_param = {'nn_model': self.nn_class,
+		                           'model_param': self.model_hyper_param,
+		                           'parameter_scale': self.parameter_scale,
+		                           'folder': self.folder,
+		                           'sampling_size': self.sampling_size,
+		                           'init_eta': (self.lr_mean, self.lr_sigma),
+		                           'elites': self.elites}
 		self.search_workers = []
 		self.best_solutions = []
 		self.best_training_fitness = []
@@ -262,15 +272,12 @@ class PNESTrainer:
 			self.nn_class, self.model_hyper_param, self.env_name, self.frame_limit, envs_num=self.test_episodes), ])
 		self.new_testing_worker = 1
 		
-		self.folder = os.getcwd()
 		print(f"total_frames: {self.total_frames}")
 		print(f"population_size: {self.population_size}")
 		print(f"sampling_size: {self.sampling_size}")
 		print(f"time_budget: {self.time_budget}s")
 		print(f"lr_mean: {self.lr_mean}")
 		print(f"lr_sigma: {self.lr_sigma}")
-		
-		
 	
 	def save_models(self, model, name):
 		"""保存模型的所有参数
@@ -340,12 +347,12 @@ class PNESTrainer:
 	
 	def training_test(self, solution):
 		future = parallel_rollout.remote(self.nn_class, self.model_hyper_param, self.env_name, None, self.frame_limit,
-		                        self.test_episodes, solution)
+		                                 self.test_episodes, solution)
 		self.test_futures.append(future)
 	
 	def get_training_test(self):
 		self.best_test_res = ray.get(self.test_futures)
-			
+	
 	def init_training(self):
 		worker_seeds = torch.randint(0, 2147483648, (self.population_size,)).tolist()
 		forward_workers = []
@@ -356,9 +363,7 @@ class PNESTrainer:
 				range(self.sampling_size)]
 			forward_workers.extend(forward_worker)
 			# noinspection PyArgumentList
-			actor = NESWorker.remote(i, seed, self.nn_class, self.model_hyper_param, self.parameter_scale,
-			                         forward_worker, self.folder,
-			                         **self.search_hyper_param)
+			actor = NESWorker.remote(i, seed, forward_worker, **self.search_hyper_param)
 			self.search_workers.append(actor)
 	
 	def train_step(self, progress):
@@ -411,7 +416,6 @@ class PNESTrainer:
 	def final(self):
 		ray.get([search_worker.draw.remote(self.folder) for search_worker in self.search_workers])
 		
-		
 		x = list(range(1, len(self.best_training_fitness) + 1))
 		average_test_score, average_test_steps = tuple(zip(*self.best_test_res))
 		saving_pic_multi_line(x, (self.best_training_fitness, average_test_score), f'Training Fitness',
@@ -430,12 +434,14 @@ def get_parser():
 	arg_parser = argparse.ArgumentParser(description=AGENT_NAME)
 	
 	# Train
+	arg_parser.add_argument('--trainings', default=10, type=int, help='Num of training times')
 	arg_parser.add_argument('--time_budget', default=300, type=int, help='Time budget in minutes')
 	arg_parser.add_argument('--total_frames', default=25000000, type=int, help='Number of total frames limit')
 	arg_parser.add_argument('--enable_time_limit', default=False, type=bool, help='Enable time limit')
 	arg_parser.add_argument('--population_size', default=5, type=int, help='Population size')
 	arg_parser.add_argument('--sampling_size', default=15, type=int, help='Sampling size for each individual')
 	arg_parser.add_argument('--frame_limit', default=10000, type=int, help='Frame limit for each rollout')
+	arg_parser.add_argument('--elites', default=0, type=int, help='Elite solutions to protect')
 	
 	arg_parser.add_argument('--lr_mean', default=0.2, type=float, help='Initial value of mean')
 	arg_parser.add_argument('--lr_sigma', default=0.1, type=float, help='Initial value of sigma')
@@ -445,7 +451,7 @@ def get_parser():
 	arg_parser.add_argument('--input_channels', default=4, type=int, help='The number of frames to input')
 	
 	# Environment
-	arg_parser.add_argument('--env_name', default="Freeway", type=str, help='The network model')
+	arg_parser.add_argument('--env_name', default="Enduro", type=str, help='The environment name')
 	
 	# Test
 	arg_parser.add_argument('--test_episodes', default=15, type=int, help='The number of episodes in testing')
@@ -456,8 +462,8 @@ def get_parser():
 def train_once(args, task_name=None):
 	if task_name is None:
 		task_name = f"{args.env_name}"  # input("task_name:")
-		
-	os.makedirs(f"./{task_name}/", exist_ok=False)
+	
+	os.makedirs(f"./{task_name}/", exist_ok=True)
 	os.chdir(f"./{task_name}/")
 	print(os.getcwd())
 	
@@ -473,15 +479,15 @@ def train_once(args, task_name=None):
 	return res
 
 
-def train_groups(group_args, num_tasks=10, task_group_name=None):
+def train_groups(group_args, task_group_name=None):
+	num_trainings = group_args.trainings
 	if task_group_name is None:
-		task_group_name = f"{num_tasks}-{group_args.env_name}"
-		
+		task_group_name = f"{num_trainings}-{group_args.env_name}"
 	os.makedirs(f"./{task_group_name}/", exist_ok=False)
 	os.chdir(f"./{task_group_name}/")
 	
 	ress = []
-	for i in range(num_tasks):
+	for i in range(num_trainings):
 		ress.append(train_once(group_args, f'{i}'))
 	training_fitness = []
 	average_test_score = []
@@ -496,7 +502,7 @@ def train_groups(group_args, num_tasks=10, task_group_name=None):
 	training_fitness = [arr[:iterations] for arr in training_fitness]
 	average_test_score = [arr[:iterations] for arr in average_test_score]
 	show_multi_line_and_area(list(range(1, iterations + 1)), (training_fitness, average_test_score),
-	                         f"{AGENT_NAME}: {group_args.env_name} training result with {num_tasks} runs",
+	                         f"{AGENT_NAME}: {group_args.env_name} training result with {num_trainings} runs",
 	                         "sum_result", ['Training Fitness', 'Average Test Score'],
 	                         "Score")
 	os.chdir(f"../")
@@ -504,9 +510,10 @@ def train_groups(group_args, num_tasks=10, task_group_name=None):
 
 if __name__ == '__main__':
 	parser = get_parser()
-	run_args = parser.parse_args()
+	run_args = parser.parse_args(["--trainings", "10",
+	                              '--total_frames', '25000000'])
 	
 	os.chdir(RESULT_ROOT_DIR)
 	# train_once(run_args)
-	train_groups(run_args, 10)
+	train_groups(run_args)
 # trainer.test_best()

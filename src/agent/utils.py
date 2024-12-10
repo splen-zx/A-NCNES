@@ -60,14 +60,14 @@ class RemoteRolloutWorker(RolloutWorker):
 
 
 @ray.remote
-def parallel_rollout(nn_model, model_args, env_name, env_param, frame_limit, envs_num, model_param):
+def parallel_rollout(nn_model, model_args, env_name, env_param, frame_limit, envs_num, solution):
 	model = nn_model(**model_args)
 	model.set_parameter_grad(grad=False)
 	envs = [get_env(env_name, env_param) for _ in range(envs_num)]
 	
 	with torch.no_grad():
 		device = nn_utils.get_device()
-		model.set_parameters(model_param)
+		model.set_parameters(solution)
 		g_reward = 0
 		step = 0
 		max_step = 0
@@ -96,7 +96,31 @@ def parallel_rollout(nn_model, model_args, env_name, env_param, frame_limit, env
 				env.close()
 				del env
 			max_step += 1
-	return g_reward / envs_num, step / envs_num
+	solution_future = ray.put(solution)
+	return g_reward / envs_num, step / envs_num, solution_future
+
+
+@ray.remote
+def get_best_tested_solution(prev_future, testing_future, per_step=False):
+	if prev_future is None:
+		test_res = []
+		best_score = None
+		best_solution_future = None
+	else:
+		test_res, best_score, best_solution_future = ray.get(prev_future)
+		
+	reward, step, solution_future = ray.get(testing_future)
+	if per_step:
+		score = reward / step  # TODO: not the per_step cal method
+	else:
+		score = reward
+	
+	test_res.append(score)
+	if (best_score is None) or (best_score <= score):
+		best_score = score
+		best_solution_future = solution_future
+	
+	return test_res, best_score, best_solution_future
 
 
 if __name__ == "__main__":
