@@ -19,6 +19,7 @@ AGENT_NAME = "A-NCNES"
 RESULT_ROOT_DIR = f"/results/{AGENT_NAME}"
 os.makedirs(RESULT_ROOT_DIR, exist_ok=True)
 
+
 @ray.remote(num_cpus=1)
 class RolloutWorker:
 	def __init__(self, diversity_worker, nn_model, model_param, env_name, frame_limit, buffer_prob, env_param=None):
@@ -354,7 +355,7 @@ class ANCNESTrainer(PNESTrainer):
 		}
 		
 		self.diversity_worker = None
-		
+	
 	def init_training(self):
 		# noinspection PyArgumentList
 		self.diversity_worker = DiversityWorker.remote(self.env_name, self.buffer_size)
@@ -407,7 +408,8 @@ def get_parser():
 	arg_parser.add_argument('--population_size', default=5, type=int, help='Population size')
 	arg_parser.add_argument('--sampling_size', default=15, type=int, help='Sampling size for each individual')
 	arg_parser.add_argument('--buffer_size', default=10000, type=int, help='Buffer_size')
-	arg_parser.add_argument('--buffer_updating_rate', default=0.4, type=float, help='The rate to update buffer each step')
+	arg_parser.add_argument('--buffer_updating_rate', default=0.4, type=float,
+	                        help='The rate to update buffer each step')
 	arg_parser.add_argument('--frame_limit', default=10000, type=int, help='Frame limit for each rollout')
 	arg_parser.add_argument('--elites', default=0, type=int, help='Elite solutions to protect')
 	
@@ -420,17 +422,17 @@ def get_parser():
 	arg_parser.add_argument('--input_channels', default=4, type=int, help='The number of frames to input')
 	
 	# Environment
-	arg_parser.add_argument('--env_name', default="Freeway", type=str, help='The network model')
+	arg_parser.add_argument('--env_name', default="Enduro", type=str, help='The network model')
 	
 	# Test
 	arg_parser.add_argument('--test_episodes', default=15, type=int, help='The number of episodes in testing')
 	
 	return arg_parser
-	
-	
+
+
 def train_once(args, task_name=None):
 	if task_name is None:
-		task_name = f"{args.env_name}"  # input("task_name:")
+		task_name = f"{args.env_name}{f'_EP_{args.elites:02}' if args.elites else ''}"  # input("task_name:")
 	os.makedirs(f"./{task_name}/", exist_ok=False)
 	os.chdir(f"./{task_name}/")
 	print(os.getcwd())
@@ -449,7 +451,7 @@ def train_once(args, task_name=None):
 def train_groups(group_args, task_group_name=None):
 	num_trainings = group_args.trainings
 	if task_group_name is None:
-		task_group_name = f"{num_trainings}-{group_args.env_name}"
+		task_group_name = f"{num_trainings}-{group_args.env_name}{f'_EP_{group_args.elites:02}' if group_args.elites else ''}"
 	os.makedirs(f"./{task_group_name}/", exist_ok=False)
 	os.chdir(f"./{task_group_name}/")
 	
@@ -475,13 +477,16 @@ def train_groups(group_args, task_group_name=None):
 	os.chdir(f"../")
 
 
-if __name__ == '__main__':
+def main():
 	parser = get_parser()
-	run_args = parser.parse_args(["--trainings", "2",
-	                              '--total_frames', '250000'])
+	run_args = parser.parse_args(["--trainings", "10",
+	                              '--total_frames', '25000000',
+	                              '--elites', '3'])
 	
 	os.chdir(RESULT_ROOT_DIR)
 	# train_once(run_args)
 	train_groups(run_args)
-# trainer.test_best()
 
+
+if __name__ == '__main__':
+	main()
