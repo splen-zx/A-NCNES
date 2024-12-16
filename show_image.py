@@ -42,26 +42,30 @@ def read_csv_to_dict(file_name):
 
 
 if __name__ == "__main__":
-	res_path = "/res/"
 	lines = []
-	for i in os.listdir(res_path):
-		if i[-1] == '8':
-			continue
-		if i[-3] == 'dqn':
-			continue
-		dic = read_csv_to_dict(os.path.join(res_path, i, "progress.csv"))
-		name = i.split("_")[2].upper()
-		l = [(0.0 if s == '' else float(s)) for s in dic['rollout/ep_rew_mean']]
-		lines.append((name, l))
 	
-	for i in os.listdir('/results'):
+	# res_path = "/res/"
+	# for i in os.listdir(res_path):
+	# 	if i[-1] == '8':
+	# 		continue
+	# 	if i[-3] == 'dqn':
+	# 		continue
+	# 	dic = read_csv_to_dict(os.path.join(res_path, i, "progress.csv"))
+	# 	name = i.split("_")[2].upper()
+	# 	l = [(0.0 if s == '' else float(s)) for s in dic['rollout/ep_rew_mean']]
+	# 	lines.append((name, l))
+	
+	for i in os.listdir('/results/A-NCNES'):
+		if i.split("_")[0] == "10-Freeway":
+			continue
 		datas = []
-		for j in os.listdir(os.path.join('/results', i)):
-			with open(os.path.join('/results', i, j, "config_result.json")) as f:
+		for j in os.listdir(os.path.join('/results/A-NCNES', i)):
+			if j == 'sum_result.png': continue
+			with open(os.path.join('/results/A-NCNES', i, j, "config_result.json")) as f:
 				c = json.load(f)
 				data = c['average_test_score']
 				datas.append(data)
-		name = i.split('_')[-1].upper()
+		name = i.split('_')[-2].upper()
 		lines.append((name, datas))
 	
 	ys = []
@@ -73,6 +77,6 @@ if __name__ == "__main__":
 		xs.append(n)
 		n = n.shape[-1]
 		ys.append([(i + 1) / n for i in range(n)])
-	show_multi_line_and_area(ys, xs, 'Enduro', 'image_', ns, 'Score', 'Training Process')
+	show_multi_line_and_area(ys, xs, 'Enduro with Elite Protection', 'image_', ns, 'Score', 'Training Process')
 	
 	print()

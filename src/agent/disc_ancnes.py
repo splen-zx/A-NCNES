@@ -304,6 +304,7 @@ class NESSearch:
 			steps += step
 		pairs = [list(row) for row in zip(self.samples, fits, action_probs)]
 		pairs = sorted(pairs, key=lambda x: x[1], reverse=True)
+		self.samples = [pair[0] for pair in pairs]
 		
 		step_best_solution = copy.copy(pairs[0])
 		if (self.best_solution is None) or step_best_solution[1] > self.best_solution[1]:

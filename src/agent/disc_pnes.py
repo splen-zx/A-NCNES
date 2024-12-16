@@ -198,6 +198,7 @@ class NESSearch:
 			steps += step
 		pairs = [list(row) for row in zip(self.samples, fits)]
 		pairs = sorted(pairs, key=lambda x: x[1], reverse=True)
+		self.samples = [pair[0] for pair in pairs]
 		
 		step_best_solution = copy.copy(pairs[0])
 		if (self.best_solution is None) or step_best_solution[1] > self.best_solution[1]:
@@ -236,7 +237,7 @@ class PNESTrainer:
 		self.lr_sigma = args.lr_sigma
 		# test
 		self.test_episodes = args.test_episodes
-
+		
 		self.folder = os.getcwd()
 		
 		# check env
@@ -255,7 +256,6 @@ class PNESTrainer:
 		
 		self.parameter_scale = self.get_parameter_scale()
 		
-
 		self.search_hyper_param = {'nn_model': self.nn_class,
 		                           'model_param': self.model_hyper_param,
 		                           'parameter_scale': self.parameter_scale,
@@ -429,7 +429,7 @@ class PNESTrainer:
 		                "average_test_steps": average_test_steps}
 		with open('config_result.json', 'w') as f:
 			json.dump(self.args.__dict__ | training_res, f)
-		torch.save(best_solution,f"best_solution_{best_score:.2f}.pt")
+		torch.save(best_solution, f"best_solution_{best_score:.2f}.pt")
 		return training_res
 
 
@@ -454,7 +454,7 @@ def get_parser():
 	arg_parser.add_argument('--input_channels', default=4, type=int, help='The number of frames to input')
 	
 	# Environment
-	arg_parser.add_argument('--env_name', default="Enduro", type=str, help='The environment name')
+	arg_parser.add_argument('--env_name', default="Freeway_D", type=str, help='The environment name')
 	
 	# Test
 	arg_parser.add_argument('--test_episodes', default=15, type=int, help='The number of episodes in testing')
@@ -485,7 +485,7 @@ def train_once(args, task_name=None):
 def train_groups(group_args, task_group_name=None):
 	num_trainings = group_args.trainings
 	if task_group_name is None:
-		task_group_name = f"{num_trainings}-{group_args.env_name}"
+		task_group_name = f"{num_trainings}-{group_args.env_name}{f'_EP_{group_args.elites:02}' if group_args.elites else ''}"
 	os.makedirs(f"./{task_group_name}/", exist_ok=True)
 	os.chdir(f"./{task_group_name}/")
 	
@@ -511,18 +511,23 @@ def train_groups(group_args, task_group_name=None):
 	os.chdir(f"../")
 
 
-def main():
+def main(args):
 	# env_vars = os.environ
 	# for key, value in env_vars.items():
 	# 	print(f"{key}={value}")
 	
 	parser = get_parser()
-	run_args = parser.parse_args(["--trainings", "10",
-	                              '--total_frames', '25000000'])
-
+	run_args = parser.parse_args(args)
+	
 	os.chdir(RESULT_ROOT_DIR)
 	# train_once(run_args)
 	train_groups(run_args)
 
+
 if __name__ == '__main__':
-	main()
+	main(["--trainings", "3",
+	      '--elites', '3'])
+	main(["--trainings", "3",
+	      '--elites', '1'])
+	main(["--trainings", "3"
+	      ])

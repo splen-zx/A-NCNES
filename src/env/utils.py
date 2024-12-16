@@ -2,8 +2,8 @@ import gymnasium as gym
 import ale_py
 
 
-def atari_env(name):
-	env = gym.make(f"{name}-v4", frameskip=1, render_mode="rgb_array")
+def atari_env(name, karg=None):
+	env = gym.make(f"{name}-v4", frameskip=1, render_mode="rgb_array", **karg)
 	env = gym.wrappers.AtariPreprocessing(env)
 	return gym.wrappers.FrameStackObservation(env, stack_size=4)
 
@@ -11,6 +11,9 @@ def atari_env(name):
 def freeway():
 	return atari_env("Freeway")
 
+def freeway_d():
+	return atari_env("Freeway",
+	                 {'difficulty': 1})
 
 def beamrider():
 	return atari_env("BeamRider")
@@ -26,6 +29,7 @@ def breakout():
 
 
 config = {
+	"Freeway_D": freeway_d,
 	"Freeway": freeway,
 	"Enduro": enduro,
 	"BeamRider": beamrider,
