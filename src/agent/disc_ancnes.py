@@ -478,11 +478,13 @@ def train_groups(group_args, task_group_name=None):
 	os.chdir(f"../")
 
 
-def main():
+def main(args=None):
+	if args is None:
+		args = ["--trainings", "10",
+		        '--total_frames', '25000000',
+		        '--elites', '3']
 	parser = get_parser()
-	run_args = parser.parse_args(["--trainings", "10",
-	                              '--total_frames', '25000000',
-	                              '--elites', '3'])
+	run_args = parser.parse_args(args)
 	
 	os.chdir(RESULT_ROOT_DIR)
 	# train_once(run_args)
@@ -490,4 +492,7 @@ def main():
 
 
 if __name__ == '__main__':
-	main()
+	main(["--trainings", "10",
+	      '--elites', '3'])
+	main(["--trainings", "10",
+	      '--elites', '1'])

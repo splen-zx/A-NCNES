@@ -526,8 +526,6 @@ def main(args):
 
 if __name__ == '__main__':
 	main(["--trainings", "3",
-	      '--elites', '3'])
-	main(["--trainings", "3",
 	      '--elites', '1'])
 	main(["--trainings", "3"
 	      ])

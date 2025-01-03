@@ -3,7 +3,10 @@ import ale_py
 
 
 def atari_env(name, karg=None):
-	env = gym.make(f"{name}-v4", frameskip=1, render_mode="rgb_array", **karg)
+	if karg is None:
+		env = gym.make(f"{name}-v4", frameskip=1, render_mode="rgb_array")
+	else:
+		env = gym.make(f"{name}-v4", frameskip=1, render_mode="rgb_array", **karg)
 	env = gym.wrappers.AtariPreprocessing(env)
 	return gym.wrappers.FrameStackObservation(env, stack_size=4)
 
